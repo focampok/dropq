@@ -1,0 +1,145 @@
+{
+  "sessionId": "fixture",
+  "city": "Houston",
+  "eventKind": "tour",
+  "seeds": [
+    { "raw": "Bad Bunny", "entityId": "MOCK:artist:bad-bunny", "type": "urn:entity:artist" },
+    { "raw": "Karol G", "entityId": "MOCK:artist:karol-g", "type": "urn:entity:artist" },
+    { "raw": "Nike", "entityId": "MOCK:brand:nike", "type": "urn:entity:brand" }
+  ],
+  "packs": [
+    {
+      "label": "A",
+      "axis": "root",
+      "items": [
+        {
+          "slot": "watch",
+          "entityId": "MOCK:movie:placeholder-watch-root",
+          "name": "Sample watch pick (MOCK)",
+          "type": "urn:entity:tv_show",
+          "hop": 0,
+          "imageUrl": null,
+          "affinity": null,
+          "explain": {
+            "en": "Placeholder card. Real Qloo data arrives with the API key.",
+            "es": "Tarjeta de ejemplo. Los datos reales de Qloo llegan con la API key."
+          },
+          "confidence": "unverified",
+          "provenance": "mock"
+        },
+        {
+          "slot": "listen",
+          "entityId": "MOCK:artist:placeholder-listen-root",
+          "name": "Sample listen pick (MOCK)",
+          "type": "urn:entity:artist",
+          "hop": 0,
+          "imageUrl": null,
+          "affinity": null,
+          "explain": {
+            "en": "Placeholder card. Real Qloo data arrives with the API key.",
+            "es": "Tarjeta de ejemplo. Los datos reales de Qloo llegan con la API key."
+          },
+          "confidence": "unverified",
+          "provenance": "mock"
+        },
+        {
+          "slot": "wear",
+          "entityId": "MOCK:brand:placeholder-wear-root",
+          "name": "Sample wear pick (MOCK)",
+          "type": "urn:entity:brand",
+          "hop": 0,
+          "imageUrl": null,
+          "affinity": null,
+          "explain": {
+            "en": "Placeholder card. Real Qloo data arrives with the API key.",
+            "es": "Tarjeta de ejemplo. Los datos reales de Qloo llegan con la API key."
+          },
+          "confidence": "unverified",
+          "provenance": "mock"
+        },
+        {
+          "slot": "do",
+          "entityId": "MOCK:place:placeholder-do-root",
+          "name": "Sample do pick (MOCK)",
+          "type": "urn:entity:place",
+          "hop": 0,
+          "imageUrl": null,
+          "affinity": null,
+          "explain": {
+            "en": "Placeholder card. Real Qloo data arrives with the API key.",
+            "es": "Tarjeta de ejemplo. Los datos reales de Qloo llegan con la API key."
+          },
+          "confidence": "unverified",
+          "provenance": "mock"
+        }
+      ]
+    },
+    {
+      "label": "B",
+      "axis": "bridge",
+      "items": [
+        {
+          "slot": "watch",
+          "entityId": "MOCK:movie:placeholder-watch-bridge",
+          "name": "Sample watch pick (MOCK)",
+          "type": "urn:entity:tv_show",
+          "hop": 1,
+          "imageUrl": null,
+          "affinity": null,
+          "explain": {
+            "en": "Placeholder card. Real Qloo data arrives with the API key.",
+            "es": "Tarjeta de ejemplo. Los datos reales de Qloo llegan con la API key."
+          },
+          "confidence": "unverified",
+          "provenance": "mock"
+        },
+        {
+          "slot": "listen",
+          "entityId": "MOCK:artist:placeholder-listen-bridge",
+          "name": "Sample listen pick (MOCK)",
+          "type": "urn:entity:artist",
+          "hop": 1,
+          "imageUrl": null,
+          "affinity": null,
+          "explain": {
+            "en": "Placeholder card. Real Qloo data arrives with the API key.",
+            "es": "Tarjeta de ejemplo. Los datos reales de Qloo llegan con la API key."
+          },
+          "confidence": "unverified",
+          "provenance": "mock"
+        },
+        {
+          "slot": "wear",
+          "entityId": "MOCK:brand:placeholder-wear-bridge",
+          "name": "Sample wear pick (MOCK)",
+          "type": "urn:entity:brand",
+          "hop": 1,
+          "imageUrl": null,
+          "affinity": null,
+          "explain": {
+            "en": "Placeholder card. Real Qloo data arrives with the API key.",
+            "es": "Tarjeta de ejemplo. Los datos reales de Qloo llegan con la API key."
+          },
+          "confidence": "unverified",
+          "provenance": "mock"
+        },
+        {
+          "slot": "do",
+          "entityId": "MOCK:place:placeholder-do-bridge",
+          "name": "Sample do pick (MOCK)",
+          "type": "urn:entity:place",
+          "hop": 1,
+          "imageUrl": null,
+          "affinity": null,
+          "explain": {
+            "en": "Placeholder card. Real Qloo data arrives with the API key.",
+            "es": "Tarjeta de ejemplo. Los datos reales de Qloo llegan con la API key."
+          },
+          "confidence": "unverified",
+          "provenance": "mock"
+        }
+      ]
+    }
+  ],
+  "coverage": { "notes": { "en": "", "es": "" } }
+}

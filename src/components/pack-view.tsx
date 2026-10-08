@@ -1,0 +1,217 @@
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { getDictionary, type Locale } from "@/lib/i18n";
+import { STEP_IDS, type StepId } from "@/lib/i18n/types";
+import { SLOTS, type AssembledItem, type AssembledPack } from "@/lib/pack/assemble";
+
+export function PackView({
+  locale,
+  pack,
+  steps,
+  anchors,
+  narratives,
+  error,
+  bridgeMode = "default",
+  onBridgeMode,
+  bridgeBusy = false,
+}: {
+  locale: Locale;
+  pack: AssembledPack | null;
+  steps?: Partial<Record<StepId, "pending" | "active" | "done" | "skipped" | "error">>;
+  anchors?: { rawText: string; resolvedName: string | null; type: string }[];
+  narratives?: { A?: string | null; B?: string | null };
+  error?: string | null;
+  bridgeMode?: "default" | "deep_cuts";
+  onBridgeMode?: (mode: "default" | "deep_cuts") => void;
+  bridgeBusy?: boolean;
+}) {
+  const dictionary = getDictionary(locale);
+  const note = pack?.coverage.notes[locale] ?? "";
+  const mock = pack?.packs.some((plan) => plan.items.some((item) => item.provenance === "mock")) ?? false;
+
+  return (
+    <div className="mx-auto max-w-6xl px-5 pb-16 md:px-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-[0.18em] text-paper/50">{pack?.city}</p>
+          <p className="mt-1 text-sm text-paper/70">
+            {pack ? dictionary.eventKinds[pack.eventKind] : ""}
+          </p>
+        </div>
+        {mock ? <Badge>{dictionary.pack.mockBadge}</Badge> : null}
+      </div>
+
+      {anchors && anchors.length > 0 ? (
+        <ul className="mt-4 flex flex-wrap gap-2 text-sm text-paper/80">
+          {anchors.map((anchor) => (
+            <li key={anchor.rawText}>
+              {anchor.rawText} {dictionary.pack.resolvedAs} {anchor.resolvedName ?? "—"} · {anchor.type}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {error ? (
+        <p role="alert" className="mt-4 text-sm text-stamp">
+          {error}
+        </p>
+      ) : null}
+
+      <ol className="mt-6 flex flex-wrap gap-2">
+        {STEP_IDS.map((stepId) => {
+          const state = steps?.[stepId] ?? "pending";
+          const label =
+            state === "active"
+              ? dictionary.pack.active
+              : state === "done"
+                ? dictionary.pack.stepDone
+                : state === "skipped"
+                  ? dictionary.pack.stepSkipped
+                  : dictionary.pack.pending;
+          return (
+            <li
+              key={stepId}
+              data-step={stepId}
+              data-state={state}
+              className="min-w-36 flex-1 rounded-md border border-paper/15 bg-stage-raised px-3 py-2"
+            >
+              <p className="font-mono text-[10px] uppercase tracking-wide text-paper/40">{stepId}</p>
+              <p className="mt-1 text-sm text-paper">{dictionary.pack.steps[stepId]}</p>
+              <p className="text-xs text-paper/50">{label}</p>
+            </li>
+          );
+        })}
+      </ol>
+
+      <div className="mt-8 grid gap-6 lg:grid-cols-2">
+        {pack?.packs.map((plan) => (
+          <section key={plan.label} aria-label={dictionary.plans[plan.label]}>
+            <h2 className="font-serif text-3xl text-paper">
+              <span className="mr-2 text-paper/40">{plan.label}</span>
+              {dictionary.plans[plan.label]}
+            </h2>
+            {narratives?.[plan.label] ? (
+              <p className="mt-2 text-sm text-paper/75">{narratives[plan.label]}</p>
+            ) : null}
+            {plan.label === "B" && onBridgeMode ? (
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  disabled={bridgeBusy}
+                  aria-pressed={bridgeMode === "deep_cuts"}
+                  onClick={() => onBridgeMode(bridgeMode === "deep_cuts" ? "default" : "deep_cuts")}
+                  className="rounded-md border border-paper/20 px-3 py-1.5 text-sm text-paper hover:bg-paper/10 disabled:opacity-50"
+                >
+                  {dictionary.pack.deepCuts}
+                </button>
+                <p className="text-xs uppercase tracking-[0.14em] text-paper/50">
+                  {bridgeMode === "deep_cuts" ? dictionary.pack.deepCutsOn : dictionary.pack.deepCutsOff}
+                </p>
+              </div>
+            ) : null}
+            <div className="mt-4 space-y-3">
+              {SLOTS.map((slot) => {
+                const item = plan.items.find((entry) => entry.slot === slot);
+                if (!item) return null;
+                return <PackCard key={`${plan.label}-${slot}`} item={item} locale={locale} />;
+              })}
+            </div>
+          </section>
+        ))}
+      </div>
+
+      {note ? (
+        <p className="mt-8 text-sm text-paper/70">
+          <span className="mr-2 uppercase tracking-[0.14em] text-paper/45">
+            {dictionary.pack.coverage}
+          </span>
+          {note}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
+  const dictionary = getDictionary(locale);
+  const affinity =
+    item.affinity === null || item.affinity === undefined
+      ? dictionary.pack.noAffinity
+      : String(item.affinity);
+
+  return (
+    <Card>
+      <CardHeader className="flex-row items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-ink/50">
+            {dictionary.slots[item.slot]}
+          </p>
+          <h3 className="mt-1 text-lg font-medium">{item.name}</h3>
+          {item.evidence?.chosenByCity === true ? (
+            <p className="mt-1 text-xs uppercase tracking-[0.14em] text-ink/50">
+              {dictionary.pack.chosenForCity}
+            </p>
+          ) : null}
+        </div>
+        {item.provenance === "mock" ? <Badge>{dictionary.pack.mockBadge}</Badge> : null}
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex gap-3">
+          {item.slot !== "do" && item.imageUrl ? (
+            // Hosts for Qloo images are confirmed after the smoke run.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={item.imageUrl}
+              alt=""
+              className="h-20 w-20 rounded-md object-cover"
+            />
+          ) : (
+            <div
+              role="img"
+              aria-label={dictionary.pack.noImage}
+              className="h-20 w-20 rounded-md border border-dashed border-line bg-ink/5"
+            />
+          )}
+          <p className="text-sm leading-relaxed text-ink/75">{item.explain[locale]}</p>
+        </div>
+        <div className="rounded-md bg-ink/[0.04] p-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-ink/50">
+            {dictionary.pack.whyQloo}
+          </p>
+          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+            <dt className="text-ink/50">{dictionary.pack.name}</dt>
+            <dd>{item.name}</dd>
+            <dt className="text-ink/50">{dictionary.pack.type}</dt>
+            <dd className="break-all">{item.type}</dd>
+            <dt className="text-ink/50">{dictionary.pack.entityId}</dt>
+            <dd className="break-all font-mono text-xs">{item.entityId}</dd>
+            <dt className="text-ink/50">{dictionary.pack.hop}</dt>
+            <dd>{item.hop}</dd>
+            <dt className="text-ink/50">{dictionary.pack.affinity}</dt>
+            <dd>{affinity}</dd>
+            <dt className="text-ink/50">{dictionary.pack.confidence}</dt>
+            <dd>{dictionary.pack.confidenceValue[item.confidence]}</dd>
+            <dt className="text-ink/50">{dictionary.pack.hitTags}</dt>
+            <dd>{tagsOf(item, "hitTags")}</dd>
+            <dt className="text-ink/50">{dictionary.pack.sharedTags}</dt>
+            <dd>{tagsOf(item, "sharedTags")}</dd>
+            <dt className="text-ink/50">{dictionary.pack.explainability}</dt>
+            <dd className="break-all">{explainOf(item)}</dd>
+          </dl>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function tagsOf(item: AssembledItem, key: "hitTags" | "sharedTags"): string {
+  const value = item.evidence?.[key];
+  if (!Array.isArray(value) || value.length === 0) return "—";
+  return value.filter((entry) => typeof entry === "string").join(", ") || "—";
+}
+
+function explainOf(item: AssembledItem): string {
+  const value = item.evidence?.explainability;
+  if (typeof value !== "string" || !value.includes(item.entityId)) return "—";
+  return value;
+}

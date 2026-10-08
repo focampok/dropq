@@ -1,0 +1,741 @@
+import type { EventKind, Prisma, SeedDomain } from "@prisma/client";
+import { prisma } from "@/lib/db";
+import { qlooApiKey } from "@/lib/qloo/config";
+import { search } from "@/lib/qloo/client";
+import { cachedInsights, cachedSearch } from "@/lib/qloo/cache";
+import { QlooQuotaError, type QlooInsightHit } from "@/lib/qloo/types";
+import { assemblePack } from "@/lib/pack/assemble";
+import fixture from "@/lib/pack/fixture.json";
+import { PINNED_PRESETS, PLACE_TIMEOUT_MS, PLACE_USE_ANCHORS, BRIDGE_VARIANT } from "@/lib/pipeline/config";
+import { pickBridgeAnchors, narratePlan } from "@/lib/pipeline/llm";
+import {
+  insightArgs,
+  loadPlaceHits,
+  loadWatchHits,
+  locationKey,
+  PACK_SLOTS,
+  validNamedHit,
+  type BridgeRequestVariant,
+  type PackSlot,
+} from "@/lib/pipeline/requests";
+import { runIndependent } from "@/lib/pipeline/settle";
+import type { StepId } from "@/lib/i18n/types";
+
+const BUDGET_MS = 40_000;
+
+export type Progress = {
+  step: StepId | "error";
+  status: "active" | "done" | "skipped" | "error";
+  detail?: string;
+  packIds?: string[];
+};
+
+type ResolvedAnchor = {
+  rawText: string;
+  entityId: string;
+  name: string;
+  type: string;
+  tags: string[];
+  domain: SeedDomain;
+};
+
+type Card = {
+  slot: PackSlot;
+  entityId: string;
+  name: string;
+  type: string;
+  tags: string[];
+  imageUrl: string | null;
+  affinity: number | null;
+  explainability: string | null;
+  chosenByCity?: boolean;
+};
+
+function tagNames(raw: unknown): string[] {
+  if (!raw || typeof raw !== "object") return [];
+  const tags = (raw as { tags?: unknown }).tags;
+  if (!Array.isArray(tags)) return [];
+  return tags.flatMap((tag) => {
+    if (!tag || typeof tag !== "object") return [];
+    const name = (tag as { name?: unknown }).name;
+    return typeof name === "string" && name.trim() ? [name.trim()] : [];
+  });
+}
+
+function perItemScore(raw: unknown): number | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  if (typeof record.affinity === "number") return record.affinity;
+  if (typeof record.score === "number") return record.score;
+  return null;
+}
+
+function explainExcerpt(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const query = (raw as { query?: unknown }).query;
+  if (!query || typeof query !== "object" || !("explainability" in query)) return null;
+  const text = JSON.stringify((query as { explainability?: unknown }).explainability);
+  return text ? text.slice(0, 2048) : null;
+}
+
+function domainOf(type: string): SeedDomain {
+  if (type.endsWith(":artist")) return "artist";
+  if (type.endsWith(":movie")) return "movie";
+  if (type.endsWith(":tv_show")) return "tv_show";
+  if (type.endsWith(":brand")) return "brand";
+  if (type.endsWith(":place")) return "place";
+  return "unknown";
+}
+
+function toCard(slot: PackSlot, hit: QlooInsightHit, excerpt: string | null): Card {
+  const tags = tagNames(hit.raw);
+  return {
+    slot,
+    entityId: hit.entityId,
+    name: hit.name,
+    type: hit.type || slotTypeName(slot),
+    tags,
+    imageUrl: slot === "do" ? null : hit.imageUrl,
+    affinity: perItemScore(hit.raw),
+    explainability: excerpt && excerpt.includes(hit.entityId) ? excerpt : null,
+  };
+}
+
+function slotTypeName(slot: PackSlot): string {
+  if (slot === "watch") return "urn:entity:tv_show";
+  if (slot === "listen") return "urn:entity:artist";
+  if (slot === "wear") return "urn:entity:brand";
+  return "urn:entity:place";
+}
+
+function pinnedSeeds(texts: string[]) {
+  return PINNED_PRESETS.find(
+    (preset) =>
+      preset.seeds.length === texts.length &&
+      preset.seeds.every((seed, index) => seed.rawText === texts[index]),
+  );
+}
+
+export async function runPipeline(
+  sessionId: string,
+  emit: (event: Progress) => void,
+  signal?: AbortSignal,
+  options?: { bridgeVariant?: "a" | "deep" },
+): Promise<{ packIds: string[] }> {
+  if (!qlooApiKey()) return persistMock(sessionId, emit);
+  const started = Date.now();
+  const expired = () => Boolean(signal?.aborted) || Date.now() - started > BUDGET_MS;
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+    include: { seeds: { orderBy: { id: "asc" } } },
+  });
+  if (!session) throw new Error("not_found");
+  const locale = session.locale === "es" ? "es" : "en";
+  const eventKind = session.eventKind ?? "tour";
+  const notes = { en: "", es: "" };
+  const append = (en: string, es: string) => {
+    notes.en = notes.en ? `${notes.en} ${en}` : en;
+    notes.es = notes.es ? `${notes.es} ${es}` : es;
+  };
+
+  emit({ step: "resolve_seeds", status: "active" });
+  const resolved = await resolveSeeds(session.seeds);
+  emit({ step: "resolve_seeds", status: "done" });
+  if (resolved.length === 0) {
+    append("No anchors resolved.", "Ninguna ancla se resolvió.");
+    for (const step of ["insights_hop0", "pick_bridge_anchors", "insights_hop1", "assemble"] as const) {
+      emit({ step, status: "skipped" });
+    }
+    emit({ step: "enrich", status: "skipped" });
+    const packIds = await persist(sessionId, session.city, eventKind, resolved, [], [], notes, locale);
+    emit({ step: "done", status: "done", packIds });
+    return { packIds };
+  }
+
+  emit({ step: "insights_hop0", status: "active" });
+  const roots = expired()
+    ? emptySlots()
+    : await loadSlots(resolved.map((seed) => seed.entityId), session.city, eventKind, 0, new Map(), "a");
+  if (expired()) append("The pack timed out. What was ready is shown.", "El pack agotó el tiempo. Se muestra lo que alcanzó.");
+  emit({ step: "insights_hop0", status: "done" });
+
+  emit({ step: "pick_bridge_anchors", status: "active" });
+  const anchorIds = expired()
+    ? []
+    : await pickBridgeAnchors(
+        (["watch", "listen", "wear"] as const).flatMap((slot) => {
+          const hit = roots.get(slot)?.[0];
+          return hit ? [{ id: hit.entityId, name: hit.name, slot, tags: hit.tags }] : [];
+        }),
+      );
+  emit({ step: "pick_bridge_anchors", status: "done", detail: anchorIds.join(",") });
+
+  emit({ step: "insights_hop1", status: "active" });
+  const excluded = new Map<PackSlot, string[]>();
+  for (const slot of PACK_SLOTS) {
+    excluded.set(slot, (roots.get(slot) ?? []).map((card) => card.entityId));
+  }
+  const bridge =
+    expired() || anchorIds.length < 2
+      ? emptySlots()
+      : await loadSlots(
+          anchorIds,
+          session.city,
+          eventKind,
+          1,
+          excluded,
+          options?.bridgeVariant === "deep" ? "deep" : "a",
+        );
+  emit({ step: "insights_hop1", status: "done" });
+
+  emit({ step: "assemble", status: "active" });
+  if ([roots, bridge].some((slots) => (slots.get("do") ?? []).some((card) => card.chosenByCity))) {
+    append(
+      "Do was chosen for the city, not from the anchors.",
+      "Hacer se eligió por la ciudad, no por las anclas.",
+    );
+  }
+  const anchorTags = new Set(resolved.flatMap((seed) => seed.tags.map((tag) => tag.toLowerCase())));
+  const rootItems = cardsToItems(roots, 0, anchorTags, new Set());
+  const rootIds = new Set(rootItems.map((item) => item.entityId));
+  const bridgeItems = cardsToItems(bridge, 1, anchorTags, rootIds);
+  const assembled = assemblePack({
+    sessionId,
+    city: session.city,
+    eventKind,
+    seeds: resolved.map((seed) => ({ raw: seed.rawText, entityId: seed.entityId, type: seed.type })),
+    packs: [
+      { label: "A", axis: "root", items: rootItems },
+      { label: "B", axis: "bridge", items: bridgeItems },
+    ],
+    coverage: { notes, mode: options?.bridgeVariant === "deep" ? "deep_cuts" : "default" },
+  });
+  emit({ step: "assemble", status: "done" });
+  emit({ step: "enrich", status: "skipped" });
+
+  const narratives = {
+    A: await narratePlan({
+      locale,
+      names: assembled.packs[0]?.items.map((item) => item.name) ?? [],
+      allowed: allowedNames(resolved, assembled),
+    }),
+    B: await narratePlan({
+      locale,
+      names: assembled.packs[1]?.items.map((item) => item.name) ?? [],
+      allowed: allowedNames(resolved, assembled),
+    }),
+  };
+  const packIds = await persist(
+    sessionId,
+    session.city,
+    eventKind,
+    resolved,
+    assembled,
+    narratives,
+    assembled.coverage.notes,
+    locale,
+  );
+  emit({ step: "done", status: "done", packIds });
+  return { packIds };
+}
+
+function emptySlots(): Map<PackSlot, Card[]> {
+  return new Map(PACK_SLOTS.map((slot) => [slot, []]));
+}
+
+function allowedNames(
+  resolved: ResolvedAnchor[],
+  assembled: ReturnType<typeof assemblePack>,
+): string[] {
+  return [
+    ...resolved.flatMap((seed) => [seed.rawText, seed.name]),
+    ...assembled.packs.flatMap((pack) => pack.items.map((item) => item.name)),
+    assembled.city,
+    "Roots",
+    "Bridge",
+    "Raíz",
+    "Puente",
+    "Watch",
+    "Listen",
+    "Wear",
+    "Do",
+  ];
+}
+
+async function resolveSeeds(seeds: { id: string; rawText: string }[]): Promise<ResolvedAnchor[]> {
+  const texts = seeds.map((seed) => seed.rawText);
+  const preset = pinnedSeeds(texts);
+  const resolved: ResolvedAnchor[] = [];
+  for (const seed of seeds) {
+    const pinned = preset?.seeds.find((item) => item.rawText === seed.rawText);
+    if (pinned?.entityId && pinned.resolvedName) {
+      const anchor = {
+        rawText: seed.rawText,
+        entityId: pinned.entityId,
+        name: pinned.resolvedName,
+        type: pinned.type,
+        tags: [],
+        domain: domainOf(pinned.type),
+      };
+      resolved.push(anchor);
+      await prisma.seed.update({
+        where: { id: seed.id },
+        data: {
+          resolvedEntityId: anchor.entityId,
+          resolvedName: anchor.name,
+          domain: anchor.domain,
+          qlooRaw: { source: "pinned", type: anchor.type },
+        },
+      });
+      continue;
+    }
+    try {
+      const found = await cachedSearch(seed.rawText);
+      const top = found.results[0];
+      if (!top) continue;
+      const anchor = {
+        rawText: seed.rawText,
+        entityId: top.entityId,
+        name: top.name,
+        type: top.type,
+        tags: tagNames(top.raw),
+        domain: domainOf(top.type),
+      };
+      resolved.push(anchor);
+      await prisma.seed.update({
+        where: { id: seed.id },
+        data: {
+          resolvedEntityId: anchor.entityId,
+          resolvedName: anchor.name,
+          domain: anchor.domain,
+          qlooRaw: top.raw as Prisma.InputJsonValue,
+        },
+      });
+    } catch (error) {
+      if (error instanceof QlooQuotaError) throw error;
+    }
+  }
+  return resolved;
+}
+
+async function loadSlots(
+  anchors: string[],
+  city: string,
+  eventKind: string,
+  hop: 0 | 1,
+  excluded: Map<PackSlot, string[]>,
+  bridgeVariant: "a" | "deep",
+): Promise<Map<PackSlot, Card[]>> {
+  const jobs = PACK_SLOTS.map((slot) => ({
+    key: slot,
+    run: async () => fetchSlot(slot, anchors, city, eventKind, hop, excluded.get(slot) ?? [], bridgeVariant),
+  }));
+  const settled = await runIndependent(jobs);
+  return new Map(settled.map((entry) => [entry.key as PackSlot, entry.value ?? []]));
+}
+
+async function fetchSlot(
+  slot: PackSlot,
+  anchors: string[],
+  city: string,
+  eventKind: string,
+  hop: 0 | 1,
+  exclude: string[],
+  bridgeVariant: "a" | "deep",
+): Promise<Card[]> {
+  const load = async (
+    filterType?: "urn:entity:tv_show" | "urn:entity:movie" | "urn:entity:artist" | "urn:entity:brand" | "urn:entity:place",
+    placeMode?: "anchors" | "city",
+  ) => {
+    const args = insightArgs({
+      slot,
+      eventKind,
+      anchors,
+      city,
+      hop,
+      exclude,
+      filterType,
+      bridgeVariant: hop === 1 ? bridgeVariant : "a",
+      placeMode,
+    });
+    if (!args) return [] as Card[];
+    const variant: BridgeRequestVariant = hop === 1 && bridgeVariant === "deep" ? "deep" : BRIDGE_VARIANT;
+    const result = await cachedInsights(
+      args,
+      {
+        anchors: args.signalInterestsEntities ?? [],
+        filterType: args.filterType,
+        location: locationKey(args),
+        hop,
+        variant,
+        exclude: args.filterExcludeEntities ?? [],
+      },
+      slot === "do" ? PLACE_TIMEOUT_MS : undefined,
+    );
+    const excerpt = explainExcerpt(result.raw);
+    return result.results.filter(validNamedHit).map((hit) => toCard(slot, hit, excerpt));
+  };
+
+  if (slot === "watch") {
+    return loadWatchHits((type) => load(type));
+  }
+  if (slot === "do") {
+    const place = await loadPlaceHits((mode) => load("urn:entity:place", mode), PLACE_USE_ANCHORS, validNamedHit);
+    return place.hits.map((card) => ({ ...card, chosenByCity: place.chosenByCity }));
+  }
+  return load(undefined);
+}
+
+function cardsToItems(
+  slots: Map<PackSlot, Card[]>,
+  hop: 0 | 1,
+  anchorTags: Set<string>,
+  blocked: Set<string>,
+) {
+  const items = [];
+  for (const slot of PACK_SLOTS) {
+    const cards = slots.get(slot) ?? [];
+    const card = cards.find((item) => item.entityId.trim() && item.name.trim() && !blocked.has(item.entityId));
+    if (!card) continue;
+    const shared = card.tags.filter((tag) => anchorTags.has(tag.toLowerCase())).slice(0, 8);
+    const cityChosen = Boolean(card.chosenByCity);
+    const confidence = cityChosen ? "medium" : shared.length > 0 ? "high" : card.tags.length > 0 ? "medium" : "unverified";
+    items.push({
+      slot,
+      entityId: card.entityId,
+      name: card.name,
+      type: card.type,
+      hop,
+      imageUrl: card.imageUrl,
+      affinity: card.affinity,
+      explain: { en: card.tags.slice(0, 8).join(", ") || "—", es: card.tags.slice(0, 8).join(", ") || "—" },
+      confidence,
+      provenance: "qloo" as const,
+      evidence: {
+        hitTags: card.tags.slice(0, 8),
+        sharedTags: shared,
+        ...(card.explainability ? { explainability: card.explainability } : {}),
+        ...(cityChosen ? { chosenByCity: true } : {}),
+      },
+    });
+  }
+  return items;
+}
+
+async function persist(
+  sessionId: string,
+  city: string,
+  eventKind: EventKind | string,
+  resolved: ResolvedAnchor[],
+  assembled: ReturnType<typeof assemblePack> | [],
+  narratives: { A: string; B: string } | [],
+  notes: { en: string; es: string },
+  locale: "en" | "es",
+): Promise<string[]> {
+  const packs = Array.isArray(assembled) ? [] : assembled.packs;
+  const story = Array.isArray(narratives) ? { A: "", B: "" } : narratives;
+  const coverage = Array.isArray(assembled) ? { notes } : assembled.coverage;
+  const ids = await prisma.$transaction(async (tx) => {
+    await tx.pack.deleteMany({ where: { sessionId } });
+    const created: string[] = [];
+    for (const pack of packs) {
+      const row = await tx.pack.create({
+        data: {
+          sessionId,
+          label: pack.label,
+          axis: pack.axis,
+          status: "ready",
+          narrative: story[pack.label] || null,
+          coverage: coverage as Prisma.InputJsonValue,
+          items: {
+            create: pack.items.map((item, position) => ({
+              slot: item.slot,
+              position,
+              hop: item.hop,
+              qlooEntityId: item.entityId,
+              qlooName: item.name,
+              qlooType: item.type,
+              imageUrl: item.imageUrl,
+              affinityScore: item.affinity,
+              explain: item.explain[locale],
+              evidence: (item.evidence ?? {}) as Prisma.InputJsonValue,
+              confidence: item.confidence,
+              provenance: item.provenance,
+            })),
+          },
+        },
+      });
+      created.push(row.id);
+    }
+    if (packs.length === 0) {
+      for (const label of ["A", "B"] as const) {
+        const row = await tx.pack.create({
+          data: {
+            sessionId,
+            label,
+            axis: label === "A" ? "root" : "bridge",
+            status: "ready",
+            coverage: { notes } as Prisma.InputJsonValue,
+          },
+        });
+        created.push(row.id);
+      }
+    }
+    await tx.session.update({ where: { id: sessionId }, data: { lastActiveAt: new Date(), city, eventKind: eventKind as EventKind } });
+    return created;
+  });
+  void resolved;
+  return ids;
+}
+
+async function persistMock(sessionId: string, emit: (event: Progress) => void): Promise<{ packIds: string[] }> {
+  const session = await prisma.session.findUnique({ where: { id: sessionId } });
+  if (!session) throw new Error("not_found");
+  for (const step of ["resolve_seeds", "insights_hop0", "pick_bridge_anchors", "insights_hop1", "assemble"] as const) {
+    emit({ step, status: "done" });
+  }
+  emit({ step: "enrich", status: "skipped" });
+  const assembled = assemblePack({ ...fixture, sessionId });
+  const ids = await prisma.$transaction(async (tx) => {
+    await tx.pack.deleteMany({ where: { sessionId } });
+    const created: string[] = [];
+    for (const pack of assembled.packs) {
+      const row = await tx.pack.create({
+        data: {
+          sessionId,
+          label: pack.label,
+          axis: pack.axis,
+          status: "ready",
+          narrative: null,
+          coverage: assembled.coverage as Prisma.InputJsonValue,
+          items: {
+            create: pack.items.map((item, position) => ({
+              slot: item.slot,
+              position,
+              hop: item.hop,
+              qlooEntityId: item.entityId,
+              qlooName: item.name,
+              qlooType: item.type,
+              imageUrl: item.imageUrl,
+              affinityScore: item.affinity,
+              explain: item.explain.en,
+              evidence: (item.evidence ?? {}) as Prisma.InputJsonValue,
+              confidence: item.confidence,
+              provenance: "mock",
+            })),
+          },
+        },
+      });
+      created.push(row.id);
+    }
+    return created;
+  });
+  emit({ step: "done", status: "done", packIds: ids });
+  return { packIds: ids };
+}
+
+export function packsToWrite(assembled: ReturnType<typeof assemblePack>): {
+  label: "B";
+  items: ReturnType<typeof assemblePack>["packs"][number]["items"];
+} {
+  return {
+    label: "B",
+    items: assembled.packs.find((pack) => pack.label === "B")?.items ?? [],
+  };
+}
+
+export async function refineBridge(
+  sessionId: string,
+  mode: "default" | "deep_cuts",
+  emit: (event: Progress) => void,
+): Promise<{ packIds: string[] }> {
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+    include: {
+      seeds: { orderBy: { id: "asc" } },
+      packs: { include: { items: { orderBy: { position: "asc" } } } },
+    },
+  });
+  if (!session) throw new Error("not_found");
+  const root = session.packs.find((pack) => pack.label === "A");
+  const bridgeRow = session.packs.find((pack) => pack.label === "B");
+  if (!root || !bridgeRow) throw new Error("not_found");
+  const eventKind = session.eventKind ?? "tour";
+  const locale = session.locale === "es" ? "es" : "en";
+  const notes = { en: "", es: "" };
+  const append = (en: string, es: string) => {
+    notes.en = notes.en ? `${notes.en} ${en}` : en;
+    notes.es = notes.es ? `${notes.es} ${es}` : es;
+  };
+
+  emit({ step: "pick_bridge_anchors", status: "active" });
+  const candidates = root.items.flatMap((item) => {
+    if (item.slot !== "watch" && item.slot !== "listen" && item.slot !== "wear") return [];
+    return [{ id: item.qlooEntityId, name: item.qlooName, slot: item.slot, tags: evidenceTags(item.evidence) }];
+  });
+  const anchorIds = qlooApiKey() ? await pickBridgeAnchors(candidates) : candidates.map((item) => item.id);
+  emit({ step: "pick_bridge_anchors", status: "done", detail: anchorIds.join(",") });
+
+  emit({ step: "insights_hop1", status: "active" });
+  const excluded = new Map<PackSlot, string[]>();
+  for (const slot of PACK_SLOTS) {
+    excluded.set(
+      slot,
+      root.items.filter((item) => item.slot === slot).map((item) => item.qlooEntityId),
+    );
+  }
+  const bridgeSlots =
+    !qlooApiKey() || anchorIds.length < 2
+      ? emptySlots()
+      : await loadSlots(anchorIds, session.city, eventKind, 1, excluded, mode === "deep_cuts" ? "deep" : "a");
+  emit({ step: "insights_hop1", status: "done" });
+  if ((bridgeSlots.get("do") ?? []).some((card) => card.chosenByCity)) {
+    append(
+      "Do was chosen for the city, not from the anchors.",
+      "Hacer se eligió por la ciudad, no por las anclas.",
+    );
+  }
+
+  emit({ step: "assemble", status: "active" });
+  const anchorTags = new Set(candidates.flatMap((item) => item.tags.map((tag) => tag.toLowerCase())));
+  const rootIds = new Set(root.items.map((item) => item.qlooEntityId));
+  const bridgeItems = qlooApiKey() ? cardsToItems(bridgeSlots, 1, anchorTags, rootIds) : storedItems(bridgeRow.items);
+  const assembled = assemblePack({
+    sessionId,
+    city: session.city,
+    eventKind,
+    seeds: session.seeds.flatMap((seed) =>
+      seed.resolvedEntityId
+        ? [{ raw: seed.rawText, entityId: seed.resolvedEntityId, type: seed.domain }]
+        : [],
+    ),
+    packs: [
+      { label: "A", axis: "root", items: storedItems(root.items) },
+      { label: "B", axis: "bridge", items: bridgeItems },
+    ],
+    coverage: { notes, mode },
+  });
+  const replacement = packsToWrite(assembled);
+  emit({ step: "assemble", status: "done" });
+
+  const narrative = await narratePlan({
+    locale,
+    names: replacement.items.map((item) => item.name),
+    allowed: [
+      ...session.seeds.flatMap((seed) => [seed.rawText, seed.resolvedName ?? ""]),
+      ...replacement.items.map((item) => item.name),
+      ...root.items.map((item) => item.qlooName),
+      session.city,
+    ],
+  });
+  await prisma.$transaction(async (tx) => {
+    await tx.packItem.deleteMany({ where: { packId: bridgeRow.id } });
+    await tx.pack.update({
+      where: { id: bridgeRow.id },
+      data: {
+        narrative,
+        coverage: assembled.coverage as Prisma.InputJsonValue,
+        items: {
+          create: replacement.items.map((item, position) => ({
+            slot: item.slot,
+            position,
+            hop: item.hop,
+            qlooEntityId: item.entityId,
+            qlooName: item.name,
+            qlooType: item.type,
+            imageUrl: item.imageUrl,
+            affinityScore: item.affinity,
+            explain: item.explain[locale],
+            evidence: (item.evidence ?? {}) as Prisma.InputJsonValue,
+            confidence: item.confidence,
+            provenance: item.provenance,
+          })),
+        },
+      },
+    });
+  });
+  emit({ step: "done", status: "done", packIds: [root.id, bridgeRow.id] });
+  return { packIds: [root.id, bridgeRow.id] };
+}
+
+function evidenceTags(evidence: unknown): string[] {
+  if (!evidence || typeof evidence !== "object") return [];
+  const tags = (evidence as { hitTags?: unknown }).hitTags;
+  return Array.isArray(tags) ? tags.filter((tag): tag is string => typeof tag === "string") : [];
+}
+
+function storedItems(
+  items: {
+    slot: string;
+    hop: number;
+    qlooEntityId: string;
+    qlooName: string;
+    qlooType: string;
+    imageUrl: string | null;
+    affinityScore: number | null;
+    explain: string | null;
+    evidence: unknown;
+    confidence: string;
+    provenance: string;
+  }[],
+) {
+  return items.flatMap((item) => {
+    if (item.slot !== "watch" && item.slot !== "listen" && item.slot !== "wear" && item.slot !== "do") return [];
+    const confidence =
+      item.confidence === "high" || item.confidence === "medium" || item.confidence === "low" || item.confidence === "unverified"
+        ? item.confidence
+        : "unverified";
+    return [
+      {
+        slot: item.slot,
+        entityId: item.qlooEntityId,
+        name: item.qlooName,
+        type: item.qlooType,
+        hop: item.hop === 1 ? (1 as const) : (0 as const),
+        imageUrl: item.imageUrl,
+        affinity: item.affinityScore,
+        explain: { en: item.explain || "—", es: item.explain || "—" },
+        confidence,
+        provenance: item.provenance === "mock" ? ("mock" as const) : ("qloo" as const),
+        evidence: evidenceRecord(item.evidence),
+      },
+    ];
+  });
+}
+
+function evidenceRecord(evidence: unknown): Record<string, unknown> | undefined {
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) return undefined;
+  return evidence as Record<string, unknown>;
+}
+
+export async function resolveOnly(
+  sessionId: string,
+): Promise<{ rawText: string; resolvedName: string; type: string; entityId: string }[]> {
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+    include: { seeds: { orderBy: { id: "asc" } } },
+  });
+  if (!session) throw new Error("not_found");
+  if (!qlooApiKey()) {
+    const resolved = [];
+    for (const seed of session.seeds) {
+      const found = await search({ query: seed.rawText });
+      const top = found.results[0];
+      if (!top) continue;
+      resolved.push({
+        rawText: seed.rawText,
+        resolvedName: top.name,
+        type: top.type,
+        entityId: top.entityId,
+      });
+    }
+    return resolved;
+  }
+  const resolved = await resolveSeeds(session.seeds);
+  return resolved.map((seed) => ({
+    rawText: seed.rawText,
+    resolvedName: seed.name,
+    type: seed.type,
+    entityId: seed.entityId,
+  }));
+}

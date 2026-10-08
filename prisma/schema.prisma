@@ -1,0 +1,189 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EventKind {
+  tour
+  con
+  comunidad
+
+  @@map("event_kind")
+}
+
+enum SeedSource {
+  text
+  preset
+  stt
+
+  @@map("seed_source")
+}
+
+enum SeedDomain {
+  artist
+  movie
+  tv_show
+  brand
+  place
+  tag
+  unknown
+
+  @@map("seed_domain")
+}
+
+enum PackLabel {
+  A
+  B
+
+  @@map("pack_label")
+}
+
+enum PackAxis {
+  root
+  bridge
+
+  @@map("pack_axis")
+}
+
+enum PackStatus {
+  draft
+  ready
+  stale
+
+  @@map("pack_status")
+}
+
+enum Slot {
+  watch
+  listen
+  wear
+  do
+
+  @@map("slot")
+}
+
+enum Confidence {
+  high
+  medium
+  low
+  unverified
+
+  @@map("confidence")
+}
+
+enum Provenance {
+  qloo
+  mock
+
+  @@map("provenance")
+}
+
+model Session {
+  id           String     @id @default(cuid())
+  createdAt    DateTime   @default(now()) @map("created_at")
+  city         String
+  locale       String     @default("en")
+  eventKind    EventKind? @map("event_kind")
+  timeWindow   String?    @map("time_window")
+  lastActiveAt DateTime   @default(now()) @map("last_active_at")
+
+  seeds        Seed[]
+  packs        Pack[]
+  baselineRuns BaselineRun[]
+
+  @@index([lastActiveAt])
+  @@map("session")
+}
+
+model Seed {
+  id               String     @id @default(cuid())
+  sessionId        String     @map("session_id")
+  rawText          String     @map("raw_text")
+  source           SeedSource
+  resolvedEntityId String?    @map("resolved_entity_id")
+  resolvedName     String?    @map("resolved_name")
+  domain           SeedDomain @default(unknown)
+  qlooRaw          Json?      @map("qloo_raw")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("seed")
+}
+
+model QlooEntityCache {
+  entityId  String   @id @map("entity_id")
+  type      String
+  name      String
+  metadata  Json
+  fetchedAt DateTime @map("fetched_at")
+
+  @@map("qloo_entity_cache")
+}
+
+model InsightCache {
+  cacheKey   String   @id @map("cache_key")
+  filterType String   @map("filter_type")
+  response   Json
+  fetchedAt  DateTime @map("fetched_at")
+
+  @@index([fetchedAt])
+  @@map("insight_cache")
+}
+
+model Pack {
+  id        String     @id @default(cuid())
+  sessionId String     @map("session_id")
+  label     PackLabel
+  axis      PackAxis
+  status    PackStatus @default(draft)
+  createdAt DateTime   @default(now()) @map("created_at")
+  narrative String?
+  coverage  Json?
+
+  session Session    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  items   PackItem[]
+
+  @@map("pack")
+}
+
+model PackItem {
+  id            String     @id @default(cuid())
+  packId        String     @map("pack_id")
+  slot          Slot
+  position      Int
+  hop           Int
+  qlooEntityId  String     @map("qloo_entity_id")
+  qlooName      String     @map("qloo_name")
+  qlooType      String     @map("qloo_type")
+  imageUrl      String?    @map("image_url")
+  affinityScore Float?     @map("affinity_score")
+  explain       String?
+  evidence      Json?
+  enrich        Json?
+  mapsUrl       String?    @map("maps_url")
+  externalUrl   String?    @map("external_url")
+  confidence    Confidence
+  provenance    Provenance
+
+  pack Pack @relation(fields: [packId], references: [id], onDelete: Cascade)
+
+  @@map("pack_item")
+}
+
+model BaselineRun {
+  id           String   @id @default(cuid())
+  sessionId    String   @map("session_id")
+  llmItems     Json     @map("llm_items")
+  verification Json
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("baseline_run")
+}

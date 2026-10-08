@@ -1,0 +1,33 @@
+# dependencies and build output
+node_modules/
+.pnpm-store/
+.next/
+out/
+build/
+dist/
+coverage/
+*.tsbuildinfo
+
+# environment (the example file stays tracked)
+.env
+.env.*
+!.env.example
+
+# local data and tooling
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.pem
+*.db
+*.sqlite
+
+# planning and agent files (kept locally, not versioned)
+/dropq-alcance*.md
+/prompt_*.md
+/gates-*.md
+
+# generated evidence from the Qloo probes (raw API payloads and reports)
+/docs/gates/
+/docs/gates*.md
+/docs/internal/

@@ -51,7 +51,11 @@ Round-2 probes (Bridge quality, location, explainability, place strategies, anch
 pnpm probe:round2
 ```
 
-That writes `docs/gates-round2.md` and `docs/gates-round2-share.md`. The derived settings live in `src/lib/pipeline/config.ts`: `PLACE_STRATEGY`, `PLACE_TIMEOUT_MS`, `BRIDGE_VARIANT`, and the pinned preset entity ids.
+That writes `docs/gates-round2.md` and `docs/gates-round2-share.md`. The derived settings live in `src/lib/pipeline/config.ts`: `PLACE_STRATEGY`, `PLACE_TIMEOUT_MS`, `PLACE_RADIUS_FALLBACK_M`, `BRIDGE_VARIANT`, and the pinned preset entity ids.
+
+The place slot never sends `filter.exclude.entities`. It asks for 20 hits and drops the Roots ids client-side instead; when that leaves nothing usable it retries once at `PLACE_RADIUS_FALLBACK_M` (40 000 m) before the slot is omitted, and only then does the coverage note carry the stage counts and the retry.
+
+Bridge anchors are ranked by how many distinct tags they share with the seed anchors. When two or more Roots candidates share at least one tag, only those are used (up to three, one per slot); otherwise the top hit per slot wins in the order listen, wear, watch.
 
 ## Rate limit and quota
 

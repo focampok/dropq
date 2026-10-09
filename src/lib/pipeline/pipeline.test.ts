@@ -15,8 +15,16 @@ const candidates = [
 ];
 
 describe("pipeline decisions", () => {
-  it("picks the top watch, listen, and wear hits in that order", () => {
-    expect(deterministicAnchors(candidates)).toEqual(["watch-1", "listen-1", "wear-1"]);
+  it("falls back to the top hit per slot when no candidate shares a tag with the seeds", () => {
+    expect(deterministicAnchors(candidates)).toEqual(["listen-1", "wear-1", "watch-1"]);
+  });
+
+  it("keeps only the candidates that share a tag with the seeds", () => {
+    const seedTags = new Set(["pop", "cloth"]);
+    expect(deterministicAnchors(candidates, seedTags)).toEqual(["listen-1", "wear-1"]);
+
+    const partial = new Set(["drama"]);
+    expect(deterministicAnchors(candidates, partial)).toEqual(["listen-1", "wear-1", "watch-1"]);
   });
 
   it("does not send filter.exclude.entities for place and widens take to 20", () => {
@@ -68,7 +76,7 @@ describe("pipeline decisions", () => {
     }));
     vi.resetModules();
     const { pickBridgeAnchors: pick } = await import("@/lib/pipeline/llm");
-    await expect(pick(candidates)).resolves.toEqual(["watch-1", "listen-1", "wear-1"]);
+    await expect(pick(candidates)).resolves.toEqual(["listen-1", "wear-1", "watch-1"]);
     vi.unstubAllEnvs();
   });
 

@@ -68,6 +68,28 @@ function tagNames(raw: unknown): string[] {
   });
 }
 
+/**
+ * Seed anchors are pinned to fixed ids, but Bridge ranking still needs the tags that
+ * search returns for them, so a pinned seed looks its tags up through the cache.
+ */
+async function seedTags(rawText: string): Promise<string[]> {
+  try {
+    const found = await cachedSearch(rawText);
+    return tagNames(found.results[0]?.raw);
+  } catch (error) {
+    if (error instanceof QlooQuotaError) throw error;
+    return [];
+  }
+}
+
+async function seedTagSet(seeds: { rawText: string }[]): Promise<Set<string>> {
+  const tags = new Set<string>();
+  for (const seed of seeds) {
+    for (const tag of await seedTags(seed.rawText)) tags.add(tag.toLowerCase());
+  }
+  return tags;
+}
+
 function perItemScore(raw: unknown): number | null {
   if (!raw || typeof raw !== "object") return null;
   const record = raw as Record<string, unknown>;
@@ -166,6 +188,7 @@ export async function runPipeline(
   if (expired()) append("The pack timed out. What was ready is shown.", "El pack agotó el tiempo. Se muestra lo que alcanzó.");
   emit({ step: "insights_hop0", status: "done" });
 
+  const anchorTags = new Set(resolved.flatMap((seed) => seed.tags.map((tag) => tag.toLowerCase())));
   emit({ step: "pick_bridge_anchors", status: "active" });
   const anchorIds = expired()
     ? []
@@ -174,6 +197,7 @@ export async function runPipeline(
           const hit = roots.get(slot)?.[0];
           return hit ? [{ id: hit.entityId, name: hit.name, slot, tags: hit.tags }] : [];
         }),
+        anchorTags,
       );
   emit({ step: "pick_bridge_anchors", status: "done", detail: anchorIds.join(",") });
 
@@ -204,7 +228,6 @@ export async function runPipeline(
       "Hacer se eligió por la ciudad, no por las anclas.",
     );
   }
-  const anchorTags = new Set(resolved.flatMap((seed) => seed.tags.map((tag) => tag.toLowerCase())));
   const rootItems = cardsToItems(roots, 0, anchorTags, new Set());
   const rootIds = new Set(rootItems.map((item) => item.entityId));
   const bridgeItems = cardsToItems(bridge, 1, anchorTags, rootIds);
@@ -290,7 +313,7 @@ async function resolveSeeds(seeds: { id: string; rawText: string }[]): Promise<R
         entityId: pinned.entityId,
         name: pinned.resolvedName,
         type: pinned.type,
-        tags: [],
+        tags: await seedTags(seed.rawText),
         domain: domainOf(pinned.type),
       };
       resolved.push(anchor);
@@ -611,7 +634,9 @@ export async function refineBridge(
     if (item.slot !== "watch" && item.slot !== "listen" && item.slot !== "wear") return [];
     return [{ id: item.qlooEntityId, name: item.qlooName, slot: item.slot, tags: evidenceTags(item.evidence) }];
   });
-  const anchorIds = qlooApiKey() ? await pickBridgeAnchors(candidates) : candidates.map((item) => item.id);
+  const anchorIds = qlooApiKey()
+    ? await pickBridgeAnchors(candidates, await seedTagSet(session.seeds))
+    : candidates.map((item) => item.id);
   emit({ step: "pick_bridge_anchors", status: "done", detail: anchorIds.join(",") });
 
   emit({ step: "insights_hop1", status: "active" });

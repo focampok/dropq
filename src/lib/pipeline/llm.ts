@@ -45,8 +45,11 @@ async function readStructured<T>(prompt: string, schema: z.ZodType<T>): Promise<
   }
 }
 
-export async function pickBridgeAnchors(candidates: AnchorCandidate[]): Promise<string[]> {
-  const fallback = deterministicAnchors(candidates);
+export async function pickBridgeAnchors(
+  candidates: AnchorCandidate[],
+  seedTags: Set<string> = new Set(),
+): Promise<string[]> {
+  const fallback = deterministicAnchors(candidates, seedTags);
   if (!llmConfigured() || candidates.length === 0) return fallback;
   try {
     const object = await readStructured(

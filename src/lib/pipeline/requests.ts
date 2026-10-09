@@ -16,6 +16,13 @@ export type PackSlot = (typeof PACK_SLOTS)[number];
 export type BridgeRequestVariant = "a" | "b" | "c" | "deep";
 export type PlaceMode = "anchors" | "city";
 
+/**
+ * Place gets a wider window than the other slots because Roots ids are removed
+ * client-side (filter.exclude.entities is not sent for place), so 10 hits leave
+ * no headroom when the city list overlaps the Roots list.
+ */
+const PLACE_TAKE = 20;
+
 export function watchType(): InsightEntityType {
   return "urn:entity:tv_show";
 }
@@ -43,6 +50,7 @@ export function insightArgs(input: {
   filterType?: InsightEntityType;
   bridgeVariant?: BridgeRequestVariant;
   placeMode?: PlaceMode;
+  placeRadius?: number;
 }): InsightsParams | null {
   const filterType = input.filterType ?? slotType(input.slot);
   const placeMode = input.placeMode ?? (PLACE_USE_ANCHORS ? "anchors" : "city");
@@ -50,9 +58,11 @@ export function insightArgs(input: {
 
   const args: InsightsParams = {
     filterType,
-    take: 10,
+    take: input.slot === "do" ? PLACE_TAKE : 10,
     explainability: input.hop === 0 && USE_EXPLAINABILITY,
-    filterExcludeEntities: input.exclude,
+    // Place does not take filter.exclude.entities: Roots ids are dropped client-side
+    // instead (see pipeline/place.ts), which keeps the slot filled deterministically.
+    ...(input.slot === "do" ? {} : { filterExcludeEntities: input.exclude }),
   };
 
   if (input.slot !== "do") {
@@ -84,7 +94,7 @@ export function insightArgs(input: {
     if (PLACE_STRATEGY === "s3") {
       if (!point) return null;
       args.filterLocation = `POINT(${point.lon} ${point.lat})`;
-      args.filterLocationRadius = PLACE_RADIUS_METERS;
+      args.filterLocationRadius = input.placeRadius ?? PLACE_RADIUS_METERS;
     }
   }
   return args;

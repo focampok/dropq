@@ -6,11 +6,17 @@ import { cachedInsights, cachedSearch } from "@/lib/qloo/cache";
 import { QlooQuotaError, type QlooInsightHit } from "@/lib/qloo/types";
 import { assemblePack } from "@/lib/pack/assemble";
 import fixture from "@/lib/pack/fixture.json";
-import { PINNED_PRESETS, PLACE_TIMEOUT_MS, PLACE_USE_ANCHORS, BRIDGE_VARIANT } from "@/lib/pipeline/config";
+import {
+  PINNED_PRESETS,
+  PLACE_RADIUS_FALLBACK_M,
+  PLACE_TIMEOUT_MS,
+  PLACE_USE_ANCHORS,
+  BRIDGE_VARIANT,
+} from "@/lib/pipeline/config";
 import { pickBridgeAnchors, narratePlan } from "@/lib/pipeline/llm";
+import { fillPlaceSlot, placeOmittedNote, type PlaceStages } from "@/lib/pipeline/place";
 import {
   insightArgs,
-  loadPlaceHits,
   loadWatchHits,
   locationKey,
   PACK_SLOTS,
@@ -153,9 +159,10 @@ export async function runPipeline(
   }
 
   emit({ step: "insights_hop0", status: "active" });
-  const roots = expired()
-    ? emptySlots()
+  const rootsLoad = expired()
+    ? { slots: emptySlots() }
     : await loadSlots(resolved.map((seed) => seed.entityId), session.city, eventKind, 0, new Map(), "a");
+  const roots = rootsLoad.slots;
   if (expired()) append("The pack timed out. What was ready is shown.", "El pack agotó el tiempo. Se muestra lo que alcanzó.");
   emit({ step: "insights_hop0", status: "done" });
 
@@ -175,9 +182,9 @@ export async function runPipeline(
   for (const slot of PACK_SLOTS) {
     excluded.set(slot, (roots.get(slot) ?? []).map((card) => card.entityId));
   }
-  const bridge =
+  const bridgeLoad =
     expired() || anchorIds.length < 2
-      ? emptySlots()
+      ? { slots: emptySlots() }
       : await loadSlots(
           anchorIds,
           session.city,
@@ -186,6 +193,8 @@ export async function runPipeline(
           excluded,
           options?.bridgeVariant === "deep" ? "deep" : "a",
         );
+  const bridge = bridgeLoad.slots;
+  notePlaceOmission(bridgeLoad, append);
   emit({ step: "insights_hop1", status: "done" });
 
   emit({ step: "assemble", status: "active" });
@@ -241,6 +250,13 @@ export async function runPipeline(
 
 function emptySlots(): Map<PackSlot, Card[]> {
   return new Map(PACK_SLOTS.map((slot) => [slot, []]));
+}
+
+/** States the stage counts and the retry whenever the place slot ends up omitted. */
+function notePlaceOmission(load: SlotLoad, append: (en: string, es: string) => void): void {
+  if (!load.place || load.place.attempt.afterRoots > 0) return;
+  const note = placeOmittedNote(load.place.first, load.place.attempt, PLACE_RADIUS_FALLBACK_M);
+  append(note.en, note.es);
 }
 
 function allowedNames(
@@ -318,6 +334,12 @@ async function resolveSeeds(seeds: { id: string; rawText: string }[]): Promise<R
   return resolved;
 }
 
+type PlaceReport = { first: PlaceStages; attempt: PlaceStages; retried: boolean };
+
+type SlotFetch = { cards: Card[]; place?: PlaceReport };
+
+export type SlotLoad = { slots: Map<PackSlot, Card[]>; place?: PlaceReport };
+
 async function loadSlots(
   anchors: string[],
   city: string,
@@ -325,13 +347,20 @@ async function loadSlots(
   hop: 0 | 1,
   excluded: Map<PackSlot, string[]>,
   bridgeVariant: "a" | "deep",
-): Promise<Map<PackSlot, Card[]>> {
+): Promise<SlotLoad> {
   const jobs = PACK_SLOTS.map((slot) => ({
     key: slot,
     run: async () => fetchSlot(slot, anchors, city, eventKind, hop, excluded.get(slot) ?? [], bridgeVariant),
   }));
   const settled = await runIndependent(jobs);
-  return new Map(settled.map((entry) => [entry.key as PackSlot, entry.value ?? []]));
+  const slots = new Map<PackSlot, Card[]>();
+  let place: PlaceReport | undefined;
+  for (const entry of settled) {
+    const value = (entry.value ?? { cards: [] }) as SlotFetch;
+    slots.set(entry.key as PackSlot, value.cards ?? []);
+    if (value.place) place = value.place;
+  }
+  return { slots, place };
 }
 
 async function fetchSlot(
@@ -342,10 +371,11 @@ async function fetchSlot(
   hop: 0 | 1,
   exclude: string[],
   bridgeVariant: "a" | "deep",
-): Promise<Card[]> {
+): Promise<SlotFetch> {
   const load = async (
     filterType?: "urn:entity:tv_show" | "urn:entity:movie" | "urn:entity:artist" | "urn:entity:brand" | "urn:entity:place",
     placeMode?: "anchors" | "city",
+    placeRadius?: number,
   ) => {
     const args = insightArgs({
       slot,
@@ -357,6 +387,7 @@ async function fetchSlot(
       filterType,
       bridgeVariant: hop === 1 ? bridgeVariant : "a",
       placeMode,
+      placeRadius,
     });
     if (!args) return [] as Card[];
     const variant: BridgeRequestVariant = hop === 1 && bridgeVariant === "deep" ? "deep" : BRIDGE_VARIANT;
@@ -373,17 +404,24 @@ async function fetchSlot(
       slot === "do" ? PLACE_TIMEOUT_MS : undefined,
     );
     const excerpt = explainExcerpt(result.raw);
-    return result.results.filter(validNamedHit).map((hit) => toCard(slot, hit, excerpt));
+    return result.results.map((hit) => toCard(slot, hit, excerpt));
   };
 
   if (slot === "watch") {
-    return loadWatchHits((type) => load(type));
+    return { cards: await loadWatchHits((type) => load(type)) };
   }
   if (slot === "do") {
-    const place = await loadPlaceHits((mode) => load("urn:entity:place", mode), PLACE_USE_ANCHORS, validNamedHit);
-    return place.hits.map((card) => ({ ...card, chosenByCity: place.chosenByCity }));
+    const outcome = await fillPlaceSlot({
+      load: (radius) => load("urn:entity:place", "city", radius),
+      rootsIds: new Set(exclude),
+      fallbackRadius: PLACE_RADIUS_FALLBACK_M,
+    });
+    return {
+      cards: outcome.cards.map((card) => ({ ...card, chosenByCity: !PLACE_USE_ANCHORS })),
+      place: { first: outcome.first, attempt: outcome.attempt, retried: outcome.retried },
+    };
   }
-  return load(undefined);
+  return { cards: (await load(undefined)).filter(validNamedHit) };
 }
 
 function cardsToItems(
@@ -584,10 +622,12 @@ export async function refineBridge(
       root.items.filter((item) => item.slot === slot).map((item) => item.qlooEntityId),
     );
   }
-  const bridgeSlots =
+  const bridgeLoad =
     !qlooApiKey() || anchorIds.length < 2
-      ? emptySlots()
+      ? { slots: emptySlots() }
       : await loadSlots(anchorIds, session.city, eventKind, 1, excluded, mode === "deep_cuts" ? "deep" : "a");
+  const bridgeSlots = bridgeLoad.slots;
+  notePlaceOmission(bridgeLoad, append);
   emit({ step: "insights_hop1", status: "done" });
   if ((bridgeSlots.get("do") ?? []).some((card) => card.chosenByCity)) {
     append(

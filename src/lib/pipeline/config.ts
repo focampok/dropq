@@ -4,6 +4,9 @@ export const BRIDGE_VARIANT: "a" | "b" | "c" = "a";
 export const USE_EXPLAINABILITY = true;
 export const PLACE_RADIUS_METERS = 20000;
 
+/** One-shot retry radius when the place slot has no usable hit inside PLACE_RADIUS_METERS. */
+export const PLACE_RADIUS_FALLBACK_M = 40000;
+
 /**
  * R7 live-night without anchors: lodging 20% Los Angeles, 10% Houston, 0% New York,
  * 10 results in each city. Anchored lists of the same URNs stayed at 40%.

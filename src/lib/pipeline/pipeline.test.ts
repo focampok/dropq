@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { deterministicAnchors, validAnchorIds } from "@/lib/pipeline/anchors";
 import { narrativeUsesOnlyKnownNames } from "@/lib/pipeline/llm";
 import { DEMO_PRESETS } from "@/lib/presets";
-import { PINNED_PRESETS } from "@/lib/pipeline/config";
+import { PINNED_PRESETS, PLACE_RADIUS_FALLBACK_M } from "@/lib/pipeline/config";
 import { packsToWrite } from "@/lib/pipeline/run";
 import { insightArgs, loadPlaceHits, loadWatchHits, locationKey } from "@/lib/pipeline/requests";
 import { assemblePack } from "@/lib/pack/assemble";
@@ -17,6 +17,43 @@ const candidates = [
 describe("pipeline decisions", () => {
   it("picks the top watch, listen, and wear hits in that order", () => {
     expect(deterministicAnchors(candidates)).toEqual(["watch-1", "listen-1", "wear-1"]);
+  });
+
+  it("does not send filter.exclude.entities for place and widens take to 20", () => {
+    const place = insightArgs({
+      slot: "do",
+      eventKind: "tour",
+      anchors: [],
+      city: "Houston",
+      hop: 1,
+      exclude: ["root-1", "root-2"],
+    });
+    expect(place?.filterExcludeEntities).toBeUndefined();
+    expect(place?.take).toBe(20);
+
+    const watch = insightArgs({
+      slot: "watch",
+      eventKind: "tour",
+      anchors: ["anchor"],
+      city: "Houston",
+      hop: 1,
+      exclude: ["root-1", "root-2"],
+    });
+    expect(watch?.filterExcludeEntities).toEqual(["root-1", "root-2"]);
+    expect(watch?.take).toBe(10);
+  });
+
+  it("widens only the radius when the place retry asks for it", () => {
+    const args = insightArgs({
+      slot: "do",
+      eventKind: "tour",
+      anchors: [],
+      city: "Houston",
+      hop: 1,
+      exclude: [],
+      placeRadius: PLACE_RADIUS_FALLBACK_M,
+    });
+    expect(args?.filterLocationRadius).toBe(PLACE_RADIUS_FALLBACK_M);
   });
 
   it("falls back when the model returns an id that was not offered", async () => {

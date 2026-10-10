@@ -351,7 +351,9 @@ export async function runPipeline(
     : await composeNarratives({ locale, plans: planInputs });
   llmMs += narration.ms;
   llmFailures.push(...narration.failures);
-  if (narration.plans.some((plan) => plan.source === "llm")) {
+  // Write whenever there is something new to record: the LLM text itself, or the
+  // failure codes that explain why the template stayed.
+  if (narration.plans.some((plan) => plan.source === "llm") || narration.failures.length > 0) {
     await writeNarratives(sessionId, narration.plans, {
       provider,
       offReason,
@@ -1145,7 +1147,7 @@ export async function refineBridge(
     const narration = await composeNarratives({ locale, plans: [plan], scope: "bridge" });
     const produced = narration.plans[0]!;
     const failures: LlmFailure[] = [...narration.failures];
-    if (produced.source === "llm") {
+    if (produced.source === "llm" || narration.failures.length > 0) {
       await writeBridge(
         bridgeRow.id,
         produced.text,

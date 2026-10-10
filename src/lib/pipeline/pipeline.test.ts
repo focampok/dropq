@@ -108,7 +108,9 @@ describe("pipeline decisions", () => {
     expect(tokensIn("[[watch]] and [[nope]]")).toEqual(["watch", "nope"]);
     expect(validateNarrative("[[nope]] wins.", plan, "en", 280)).toBe("unknown_token");
     expect(validateNarrative("[[watch]] then [[watch]].", plan, "en", 280)).toBe("repeated_token");
-    expect(validateNarrative("A night with no tokens.", plan, "en", 280)).toBeNull();
+    // A narrative that names nothing cannot be trusted to have named the cards.
+    expect(validateNarrative("A night with no tokens.", plan, "en", 280)).toBe("no_token");
+    expect(validateNarrative("A night with no tokens.", plan, "en", 60, false)).toBeNull();
   });
 
   it("passes Roots ids to hop 1 as filter.exclude.entities", () => {

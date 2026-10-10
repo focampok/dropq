@@ -31,9 +31,11 @@ const READY_MS = 120_000;
  * the limiter models anyway (one bucket per visitor).
  */
 let forwarded = 0;
+const runOctet = Math.floor(Math.random() * 240) + 1;
 function nextForwarded(): string {
   forwarded += 1;
-  return `10.9.${Math.floor(forwarded / 250)}.${forwarded % 250}`;
+  // The octet is per process, so two runs in the same minute never share a bucket.
+  return `10.9.${runOctet}.${forwarded % 250}`;
 }
 
 function cachedChromium(): string | undefined {

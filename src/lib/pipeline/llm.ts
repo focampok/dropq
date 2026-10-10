@@ -15,10 +15,39 @@ export const LLM_TIMEOUT_MS = 12_000;
 /** Anchor choice happens before assemble, so it gets a tighter budget. */
 export const ANCHOR_TIMEOUT_MS = 6_000;
 
-const TEMPERATURE = 0.2;
-/** One SDK-level retry only; the narrative step adds at most one repair retry on top. */
-const MAX_RETRIES = 1;
+const TEMPERATURE = 0;
+/**
+ * This model answers the four fields only after roughly 1.5-2.5k tokens of deliberation,
+ * so the ceiling has to sit above that: a tighter one truncates the JSON, and a truncated
+ * JSON is a guaranteed template fallback.
+ */
+const NARRATIVE_MAX_TOKENS = 4000;
+/**
+ * No blind SDK retry: a failed attempt would run again with the same prompt and spend
+ * the 12 s budget twice. The single retry the design allows is the repair retry, which
+ * carries the validator's reason and is the one that can actually succeed.
+ */
+const MAX_RETRIES = 0;
 const TIMEOUT_CODE = "timeout";
+
+/**
+ * This model deliberates for thousands of tokens before answering and the call only has
+ * 12 s. A system message that asks for the JSON and shows one worked reply cuts that
+ * deliberation roughly in half: measured 1.6-1.7k reasoning tokens and 9-10 s, against
+ * more than 2.5k tokens and a timeout without the example.
+ */
+function systemFor(scope: "both" | "bridge"): string {
+  const bridge = {
+    bridgeNarrative: "Then [[wear]] leads to [[do]] near [[anchor1]].",
+    bridgeHeadline: "[[do]] in [[city]]",
+  };
+  const roots = {
+    rootsNarrative: "[[city]] opens with [[watch]] and [[listen]].",
+    rootsHeadline: "[[watch]] x [[listen]]",
+  };
+  const example = scope === "bridge" ? bridge : { ...roots, ...bridge };
+  return `Reply with the JSON object only. Example reply: ${JSON.stringify(example)}`;
+}
 
 export const MAX_NARRATIVE_CHARS = 280;
 export const MAX_NARRATIVE_SENTENCES = 2;
@@ -49,6 +78,7 @@ export type LlmFailure =
   | "too_many_sentences"
   | "url"
   | "wrong_language"
+  | "no_token"
   | "empty";
 
 export type AnchorSource = "llm" | "rule_b_fallback";
@@ -117,6 +147,10 @@ function withTimeout<T>(ms: number, work: (signal: AbortSignal) => Promise<T>): 
 function failureClass(error: unknown): LlmFailure {
   if (error instanceof Error && error.message === TIMEOUT_CODE) return "timeout";
   if (error instanceof z.ZodError || error instanceof SyntaxError) return "invalid_json";
+  // The SDK reports "the model did not answer with a parsable object" as its own
+  // error class, which is a schema problem, not a transport one.
+  const name = error instanceof Error ? error.name : "";
+  if (name.includes("NoObjectGenerated") || name.includes("TypeValidation")) return "invalid_json";
   return "request";
 }
 
@@ -125,16 +159,19 @@ async function readStructured<T>(
   prompt: string,
   schema: z.ZodType<T>,
   timeoutMs: number,
+  options: { maxOutputTokens?: number; system?: string } = {},
 ): Promise<T> {
   const state = llmModelState();
   if (!state.configured) throw new Error("llm_not_configured");
   const result = await withTimeout(timeoutMs, (abortSignal) =>
     generateObject({
       model: state.model,
+      system: options.system ?? systemFor("both"),
       schema,
       prompt,
       temperature: TEMPERATURE,
       maxRetries: MAX_RETRIES,
+      ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
       abortSignal,
     }),
   );
@@ -145,6 +182,10 @@ const anchorSchema = z.object({
   anchorIds: z.array(z.string()).min(2).max(3),
   reason: z.string().max(140),
 });
+
+/** The anchor call gets its own worked reply: a narrative example only confuses it. */
+const ANCHOR_SYSTEM =
+  'Reply with the JSON object only. Example reply: {"anchorIds":["<id from the list>","<other id from the list>"],"reason":"why these two or three"}';
 
 export function anchorFailure(closed: readonly { id: string; slot: string }[], ids: string[]): LlmFailure {
   if (ids.some((id) => !closed.some((anchor) => anchor.id === id))) return "unknown_id";
@@ -196,7 +237,9 @@ export async function chooseBridgeAnchors(
   if (!llmConfigured() || closed.length < 2) return fallback();
   const started = Date.now();
   try {
-    const object = await readStructured(anchorPrompt(closed), anchorSchema, ANCHOR_TIMEOUT_MS);
+    const object = await readStructured(anchorPrompt(closed), anchorSchema, ANCHOR_TIMEOUT_MS, {
+      system: ANCHOR_SYSTEM,
+    });
     const ids = object.anchorIds;
     const valid =
       ids.length >= 2 &&
@@ -302,6 +345,8 @@ export function validateNarrative(
   plan: NarrativePlanInput,
   locale: Locale,
   maxChars: number,
+  /** Headlines are labels: they may name nothing, so only narratives must use a token. */
+  requireToken = true,
 ): LlmFailure | null {
   if (!text.trim()) return "empty";
   if (text.length > maxChars) return "too_long";
@@ -309,13 +354,16 @@ export function validateNarrative(
     return "too_many_sentences";
   }
   if (/https?:\/\/|www\./i.test(text)) return "url";
-  const allowed = new Set<string>(allowedTokens(plan));
-  const seen = new Set<string>();
-  for (const token of tokensIn(text)) {
+  const tokens = allowedTokens(plan);
+  const allowed = new Set<string>(tokens);
+  const used = tokensIn(text);
+  for (const token of used) {
     if (!allowed.has(token)) return "unknown_token";
-    if (seen.has(token)) return "repeated_token";
-    seen.add(token);
   }
+  if (new Set(used).size !== used.length) return "repeated_token";
+  // With tokens available, prose that names things itself is exactly the failure the
+  // placeholder design exists to prevent, so require at least one token.
+  if (requireToken && tokens.length > 0 && used.length === 0) return "no_token";
   if (wrongLanguage(text, locale)) return "wrong_language";
   return null;
 }
@@ -342,6 +390,11 @@ function narrativeSchema(scope: "both" | "bridge"): z.ZodType<NarrativeObject> {
   });
 }
 
+/**
+ * The prompt stays short and names each token's kind, because the model reasons for
+ * hundreds of tokens and the call has 12 s. Kinds also stop it dropping a token where
+ * a verb belongs ("you can [[listen]] a show").
+ */
 function narrativePrompt(
   locale: Locale,
   plans: NarrativePlanInput[],
@@ -350,22 +403,21 @@ function narrativePrompt(
 ): string {
   const language = locale === "es" ? "Spanish" : "English";
   const lines = [
-    `Write the connecting sentence for each plan, in ${language}.`,
-    "Rules:",
-    "- Never write an item name. Write the token instead, and use each token at most once per field.",
-    `- Allowed tokens: ${NARRATIVE_TOKENS.map((token) => `[[${token}]]`).join(", ")}.`,
-    "- Any other [[...]] token is rejected. No URLs.",
-    `- Each narrative: at most ${MAX_NARRATIVE_SENTENCES} sentences and at most ${MAX_NARRATIVE_CHARS} characters.`,
-    `- Each headline: at most ${MAX_HEADLINE_CHARS} characters, same token rules.`,
-    "The server replaces every token with the real name from Qloo afterwards.",
-    "Return JSON only.",
+    `Write the line that links a night-out pack. Answer in ${language}, and follow the JSON shape exactly.`,
+    "Fill every field the shape asks for, and use different wording in each.",
+    "Where a name would go, write a token instead: [[city]] the city, [[watch]] a TV show,",
+    "[[listen]] a music artist, [[wear]] a brand, [[do]] a place to go, [[anchor1]] to [[anchor3]] the audience's anchors.",
+    "Never invent a name or a token, and never use a token as a verb.",
+    "The narrative is 1 or 2 short sentences and must stay under 200 characters, well inside the 280 limit.",
+    "The headline is a separate label of at most 40 characters, never a copy of the narrative.",
+    "Each token at most once per field. No URLs.",
   ];
-  if (repair) lines.push(`The previous attempt was rejected (${repair}). Fix exactly that and retry once.`);
-  lines.push(`Plans: ${JSON.stringify(plans.map((plan) => ({ label: plan.label, city: plan.city, availableTokens: allowedTokens(plan) })))}`);
+  if (repair) lines.push(`The previous attempt was rejected (${repair}); fix exactly that.`);
+  lines.push(`Only these tokens exist: ${JSON.stringify(plans.map((plan) => ({ [plan.label]: allowedTokens(plan) })))}`);
   lines.push(
     scope === "bridge"
-      ? 'Return {"bridgeNarrative": "...", "bridgeHeadline": "..."}'
-      : 'Return {"rootsNarrative": "...", "rootsHeadline": "...", "bridgeNarrative": "...", "bridgeHeadline": "..."}',
+      ? 'Reply with JSON only: {"bridgeNarrative":"","bridgeHeadline":""}'
+      : 'Reply with JSON only: {"rootsNarrative":"","rootsHeadline":"","bridgeNarrative":"","bridgeHeadline":""}',
   );
   return lines.join("\n");
 }
@@ -405,6 +457,7 @@ export async function composeNarratives(input: {
       narrativePrompt(input.locale, input.plans, scope, repair),
       narrativeSchema(scope),
       LLM_TIMEOUT_MS,
+      { maxOutputTokens: NARRATIVE_MAX_TOKENS, system: systemFor(scope) },
     );
     const out = new Map<string, PlanNarrative>();
     for (const side of fields) {
@@ -415,7 +468,7 @@ export async function composeNarratives(input: {
       const headline = side === "roots" ? object.rootsHeadline : object.bridgeHeadline;
       const failure =
         validateNarrative(text ?? "", plan, input.locale, MAX_NARRATIVE_CHARS) ??
-        validateNarrative(headline ?? "", plan, input.locale, MAX_HEADLINE_CHARS);
+        validateNarrative(headline ?? "", plan, input.locale, MAX_HEADLINE_CHARS, false);
       if (failure || text === undefined || headline === undefined) return failure ?? "empty";
       out.set(label, {
         label,

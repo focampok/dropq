@@ -20,7 +20,8 @@
     "probe:pass3d": "tsx scripts/probe-pass3d.ts",
     "warm": "tsx scripts/warm-presets.ts",
     "verify:images": "tsx scripts/verify-images.ts",
-    "verify:ui": "tsx scripts/verify-ui.ts"
+    "verify:ui": "tsx scripts/verify-ui.ts",
+    "verify:local": "tsx scripts/verify-local.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "2.0.102",

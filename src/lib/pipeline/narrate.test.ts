@@ -257,6 +257,32 @@ describe("narration runs after the pack is stored", () => {
     expect(llmOf("B")?.narrative).toBe("template");
   });
 
+  it("records the failure codes even when every narrative falls back", async () => {
+    stubProvider();
+    let call = 0;
+    aiState.generateObject = async () => {
+      call += 1;
+      if (call === 1) return anchorResponse;
+      return {
+        object: {
+          rootsNarrative: "[[soldout]] tonight.",
+          rootsHeadline: "Roots",
+          bridgeNarrative: "[[soldout]] tomorrow.",
+          bridgeHeadline: "Bridge",
+        },
+      };
+    };
+    const sessionId = useSession();
+    await runPipeline(sessionId, () => undefined);
+    // Both plans stayed on the template, so nothing was written for the text, but the
+    // reason has to reach coverage or the fallback rate is not measurable.
+    expect(narrativeOf("A")).toBe(ROOTS_TEMPLATE);
+    expect(narrativeOf("B")).toBe(BRIDGE_TEMPLATE);
+    expect(llmOf("A")).toMatchObject({ narrative: "template", provider: "nebius" });
+    expect(llmOf("A")?.failures).toEqual(["unknown_token", "unknown_token"]);
+    expect(llmOf("B")?.failures).toEqual(["unknown_token", "unknown_token"]);
+  });
+
   it("keeps Plan A's narrative when only the Bridge is refined", async () => {
     stubProvider();
     let call = 0;

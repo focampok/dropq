@@ -1,3 +1,5 @@
+import { llmConfigured, llmOffReason } from "@/lib/llm/provider";
+
 let checked = false;
 
 export function checkBootEnv(): void {
@@ -14,8 +16,7 @@ export function checkBootEnv(): void {
   if (!process.env.QLOO_API_KEY?.trim()) {
     console.warn("QLOO_API_KEY is empty; live Qloo calls are off.");
   }
-  const nebius = ["NEBIUS_API_KEY", "NEBIUS_BASE_URL", "NEBIUS_MODEL"] as const;
-  if (nebius.some((name) => !process.env[name]?.trim())) {
-    console.warn("Nebius variables are missing; narration stays on the template.");
+  if (!llmConfigured()) {
+    console.warn(`LLM is off (${llmOffReason()}); narration stays on the template.`);
   }
 }

@@ -3,18 +3,27 @@ export type AnchorCandidate = {
   name: string;
   slot: "watch" | "listen" | "wear";
   tags: string[];
+  /** Full-list overlap stored at generation time. Ranking prefers this over truncated tags. */
+  sharedTagCount?: number;
 };
 
 /** Order used only when fewer than two candidates share a tag with the seeds. */
 const FALLBACK_ORDER = ["listen", "wear", "watch"] as const;
 
-export function sharedTagCount(candidate: AnchorCandidate, seedTags: Set<string>): number {
+export function countSharedTags(tags: readonly string[], seedTags: Set<string>): number {
   const seen = new Set<string>();
-  for (const tag of candidate.tags) {
+  for (const tag of tags) {
     const lower = tag.toLowerCase();
     if (seedTags.has(lower)) seen.add(lower);
   }
   return seen.size;
+}
+
+export function sharedTagCount(candidate: AnchorCandidate, seedTags: Set<string>): number {
+  if (typeof candidate.sharedTagCount === "number" && Number.isFinite(candidate.sharedTagCount)) {
+    return candidate.sharedTagCount;
+  }
+  return countSharedTags(candidate.tags, seedTags);
 }
 
 /**

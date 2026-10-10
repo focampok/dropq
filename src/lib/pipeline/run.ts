@@ -13,6 +13,7 @@ import {
   PLACE_USE_ANCHORS,
   BRIDGE_VARIANT,
 } from "@/lib/pipeline/config";
+import { countSharedTags } from "@/lib/pipeline/anchors";
 import { pickBridgeAnchors, narratePlan } from "@/lib/pipeline/llm";
 import { fillPlaceSlot, placeOmittedNote, type PlaceStages } from "@/lib/pipeline/place";
 import {
@@ -475,12 +476,197 @@ function cardsToItems(
       evidence: {
         hitTags: card.tags.slice(0, 8),
         sharedTags: shared,
+        sharedTagCount: countSharedTags(card.tags, anchorTags),
         ...(card.explainability ? { explainability: card.explainability } : {}),
         ...(cityChosen ? { chosenByCity: true } : {}),
       },
     });
   }
   return items;
+}
+
+type BridgeMode = "default" | "deep_cuts";
+
+type BridgeSnapshotItem = {
+  slot: "watch" | "listen" | "wear" | "do";
+  position: number;
+  hop: 0 | 1;
+  entityId: string;
+  name: string;
+  type: string;
+  imageUrl: string | null;
+  affinity: number | null;
+  explain: string;
+  evidence: Record<string, unknown>;
+  confidence: "high" | "medium" | "low" | "unverified";
+  provenance: "qloo" | "mock";
+};
+
+type PlanCoverage = {
+  notes?: { en?: string; es?: string };
+  removedFromBridge?: string[];
+  mode?: BridgeMode;
+  bridgeMode?: BridgeMode;
+  defaultBridge?: unknown;
+  deepBridge?: unknown;
+  llm?: unknown;
+};
+
+type BridgeItem = {
+  slot: "watch" | "listen" | "wear" | "do";
+  entityId: string;
+  name: string;
+  type: string;
+  hop: 0 | 1;
+  imageUrl: string | null;
+  affinity: number | null;
+  explain: { en: string; es: string };
+  confidence: "high" | "medium" | "low" | "unverified";
+  provenance: "qloo" | "mock";
+  evidence?: Record<string, unknown>;
+};
+
+function isBridgeSlot(value: unknown): value is BridgeSnapshotItem["slot"] {
+  return value === "watch" || value === "listen" || value === "wear" || value === "do";
+}
+
+function readPlanCoverage(value: unknown): PlanCoverage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as PlanCoverage;
+}
+
+function readBridgeSnapshot(value: unknown): BridgeSnapshotItem[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const items: BridgeSnapshotItem[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") return null;
+    const row = entry as Partial<BridgeSnapshotItem>;
+    if (!isBridgeSlot(row.slot) || typeof row.entityId !== "string" || !row.entityId.trim()) return null;
+    if (typeof row.name !== "string" || !row.name.trim()) return null;
+    const confidence =
+      row.confidence === "high" || row.confidence === "medium" || row.confidence === "low" || row.confidence === "unverified"
+        ? row.confidence
+        : "unverified";
+    items.push({
+      slot: row.slot,
+      position: typeof row.position === "number" ? row.position : items.length,
+      hop: row.hop === 1 ? 1 : 0,
+      entityId: row.entityId,
+      name: row.name,
+      type: typeof row.type === "string" ? row.type : "",
+      imageUrl: typeof row.imageUrl === "string" ? row.imageUrl : null,
+      affinity: typeof row.affinity === "number" ? row.affinity : null,
+      explain: typeof row.explain === "string" ? row.explain : "—",
+      evidence:
+        row.evidence && typeof row.evidence === "object" && !Array.isArray(row.evidence)
+          ? (row.evidence as Record<string, unknown>)
+          : {},
+      confidence,
+      provenance: row.provenance === "mock" ? "mock" : "qloo",
+    });
+  }
+  return items;
+}
+
+function serializeBridgeItems(items: BridgeItem[], locale: "en" | "es"): BridgeSnapshotItem[] {
+  return items.map((item, position) => ({
+    slot: item.slot,
+    position,
+    hop: item.hop,
+    entityId: item.entityId,
+    name: item.name,
+    type: item.type,
+    imageUrl: item.imageUrl,
+    affinity: item.affinity,
+    explain: item.explain[locale] || item.explain.en || "—",
+    evidence: item.evidence ?? {},
+    confidence: item.confidence,
+    provenance: item.provenance,
+  }));
+}
+
+function snapshotToItems(items: BridgeSnapshotItem[]): BridgeItem[] {
+  return items.map((item) => ({
+    slot: item.slot,
+    entityId: item.entityId,
+    name: item.name,
+    type: item.type,
+    hop: item.hop,
+    imageUrl: item.imageUrl,
+    affinity: item.affinity,
+    explain: { en: item.explain || "—", es: item.explain || "—" },
+    confidence: item.confidence,
+    provenance: item.provenance,
+    evidence: item.evidence,
+  }));
+}
+
+function planCoverage(
+  coverage: { notes: { en: string; es: string }; removedFromBridge?: string[]; mode?: BridgeMode },
+  label: "A" | "B",
+  items: BridgeItem[],
+  locale: "en" | "es",
+): Prisma.InputJsonValue {
+  if (label !== "B") return coverage as Prisma.InputJsonValue;
+  return {
+    ...coverage,
+    bridgeMode: "default",
+    defaultBridge: serializeBridgeItems(items, locale),
+  } as Prisma.InputJsonValue;
+}
+
+function coverageWithSnapshots(
+  previous: PlanCoverage,
+  coverage: { notes: { en: string; es: string }; removedFromBridge: string[]; mode?: BridgeMode },
+  mode: BridgeMode,
+  replacement: BridgeSnapshotItem[] | null,
+): Prisma.InputJsonValue {
+  const next: Record<string, unknown> = {
+    notes: coverage.notes,
+    removedFromBridge: coverage.removedFromBridge,
+    mode,
+    bridgeMode: mode,
+  };
+  if (previous.defaultBridge) next.defaultBridge = previous.defaultBridge;
+  if (previous.deepBridge) next.deepBridge = previous.deepBridge;
+  if (previous.llm) next.llm = previous.llm;
+  if (replacement) next[mode === "default" ? "defaultBridge" : "deepBridge"] = replacement;
+  return next as Prisma.InputJsonValue;
+}
+
+async function writeBridge(
+  bridgeId: string,
+  narrative: string,
+  coverage: Prisma.InputJsonValue,
+  items: BridgeItem[],
+  locale: "en" | "es",
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.packItem.deleteMany({ where: { packId: bridgeId } });
+    await tx.pack.update({
+      where: { id: bridgeId },
+      data: {
+        narrative,
+        coverage,
+        items: {
+          create: items.map((item, position) => ({
+            slot: item.slot,
+            position,
+            hop: item.hop,
+            qlooEntityId: item.entityId,
+            qlooName: item.name,
+            qlooType: item.type,
+            imageUrl: item.imageUrl,
+            affinityScore: item.affinity,
+            explain: item.explain[locale],
+            evidence: (item.evidence ?? {}) as Prisma.InputJsonValue,
+            confidence: item.confidence,
+            provenance: item.provenance,
+          })),
+        },
+      },
+    });
+  });
 }
 
 async function persist(
@@ -507,7 +693,7 @@ async function persist(
           axis: pack.axis,
           status: "ready",
           narrative: story[pack.label] || null,
-          coverage: coverage as Prisma.InputJsonValue,
+          coverage: planCoverage(coverage, pack.label, pack.items, locale),
           items: {
             create: pack.items.map((item, position) => ({
               slot: item.slot,
@@ -568,7 +754,7 @@ async function persistMock(sessionId: string, emit: (event: Progress) => void): 
           axis: pack.axis,
           status: "ready",
           narrative: null,
-          coverage: assembled.coverage as Prisma.InputJsonValue,
+          coverage: planCoverage(assembled.coverage, pack.label, pack.items, "en"),
           items: {
             create: pack.items.map((item, position) => ({
               slot: item.slot,
@@ -623,6 +809,50 @@ export async function refineBridge(
   if (!root || !bridgeRow) throw new Error("not_found");
   const eventKind = session.eventKind ?? "tour";
   const locale = session.locale === "es" ? "es" : "en";
+  const previous = readPlanCoverage(bridgeRow.coverage);
+  const storedSnapshot = readBridgeSnapshot(mode === "default" ? previous.defaultBridge : previous.deepBridge);
+  if (storedSnapshot) {
+    emit({ step: "pick_bridge_anchors", status: "skipped", detail: "snapshot" });
+    emit({ step: "insights_hop1", status: "skipped", detail: "snapshot" });
+    emit({ step: "assemble", status: "active" });
+    const assembled = assemblePack({
+      sessionId,
+      city: session.city,
+      eventKind,
+      seeds: session.seeds.flatMap((seed) =>
+        seed.resolvedEntityId
+          ? [{ raw: seed.rawText, entityId: seed.resolvedEntityId, type: seed.domain }]
+          : [],
+      ),
+      packs: [
+        { label: "A", axis: "root", items: storedItems(root.items) },
+        { label: "B", axis: "bridge", items: snapshotToItems(storedSnapshot) },
+      ],
+      coverage: { notes: { en: "", es: "" }, mode },
+    });
+    const replacement = packsToWrite(assembled);
+    emit({ step: "assemble", status: "done" });
+    const narrative = await narratePlan({
+      locale,
+      names: replacement.items.map((item) => item.name),
+      allowed: [
+        ...session.seeds.flatMap((seed) => [seed.rawText, seed.resolvedName ?? ""]),
+        ...replacement.items.map((item) => item.name),
+        ...root.items.map((item) => item.qlooName),
+        session.city,
+      ],
+    });
+    await writeBridge(
+      bridgeRow.id,
+      narrative,
+      coverageWithSnapshots(previous, assembled.coverage, mode, null),
+      replacement.items,
+      locale,
+    );
+    emit({ step: "done", status: "done", packIds: [root.id, bridgeRow.id] });
+    return { packIds: [root.id, bridgeRow.id] };
+  }
+
   const notes = { en: "", es: "" };
   const append = (en: string, es: string) => {
     notes.en = notes.en ? `${notes.en} ${en}` : en;
@@ -632,10 +862,20 @@ export async function refineBridge(
   emit({ step: "pick_bridge_anchors", status: "active" });
   const candidates = root.items.flatMap((item) => {
     if (item.slot !== "watch" && item.slot !== "listen" && item.slot !== "wear") return [];
-    return [{ id: item.qlooEntityId, name: item.qlooName, slot: item.slot, tags: evidenceTags(item.evidence) }];
+    const shared = storedSharedCount(item.evidence);
+    return [
+      {
+        id: item.qlooEntityId,
+        name: item.qlooName,
+        slot: item.slot,
+        tags: evidenceTags(item.evidence),
+        ...(shared === undefined ? {} : { sharedTagCount: shared }),
+      },
+    ];
   });
+  const seedTags = qlooApiKey() ? await seedTagSet(session.seeds) : new Set<string>();
   const anchorIds = qlooApiKey()
-    ? await pickBridgeAnchors(candidates, await seedTagSet(session.seeds))
+    ? await pickBridgeAnchors(candidates, seedTags)
     : candidates.map((item) => item.id);
   emit({ step: "pick_bridge_anchors", status: "done", detail: anchorIds.join(",") });
 
@@ -662,9 +902,8 @@ export async function refineBridge(
   }
 
   emit({ step: "assemble", status: "active" });
-  const anchorTags = new Set(candidates.flatMap((item) => item.tags.map((tag) => tag.toLowerCase())));
   const rootIds = new Set(root.items.map((item) => item.qlooEntityId));
-  const bridgeItems = qlooApiKey() ? cardsToItems(bridgeSlots, 1, anchorTags, rootIds) : storedItems(bridgeRow.items);
+  const bridgeItems = qlooApiKey() ? cardsToItems(bridgeSlots, 1, seedTags, rootIds) : storedItems(bridgeRow.items);
   const assembled = assemblePack({
     sessionId,
     city: session.city,
@@ -693,34 +932,21 @@ export async function refineBridge(
       session.city,
     ],
   });
-  await prisma.$transaction(async (tx) => {
-    await tx.packItem.deleteMany({ where: { packId: bridgeRow.id } });
-    await tx.pack.update({
-      where: { id: bridgeRow.id },
-      data: {
-        narrative,
-        coverage: assembled.coverage as Prisma.InputJsonValue,
-        items: {
-          create: replacement.items.map((item, position) => ({
-            slot: item.slot,
-            position,
-            hop: item.hop,
-            qlooEntityId: item.entityId,
-            qlooName: item.name,
-            qlooType: item.type,
-            imageUrl: item.imageUrl,
-            affinityScore: item.affinity,
-            explain: item.explain[locale],
-            evidence: (item.evidence ?? {}) as Prisma.InputJsonValue,
-            confidence: item.confidence,
-            provenance: item.provenance,
-          })),
-        },
-      },
-    });
-  });
+  await writeBridge(
+    bridgeRow.id,
+    narrative,
+    coverageWithSnapshots(previous, assembled.coverage, mode, serializeBridgeItems(replacement.items, locale)),
+    replacement.items,
+    locale,
+  );
   emit({ step: "done", status: "done", packIds: [root.id, bridgeRow.id] });
   return { packIds: [root.id, bridgeRow.id] };
+}
+
+function storedSharedCount(evidence: unknown): number | undefined {
+  if (!evidence || typeof evidence !== "object") return undefined;
+  const value = (evidence as { sharedTagCount?: unknown }).sharedTagCount;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function evidenceTags(evidence: unknown): string[] {

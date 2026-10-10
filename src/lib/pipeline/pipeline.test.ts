@@ -27,6 +27,21 @@ describe("pipeline decisions", () => {
     expect(deterministicAnchors(candidates, partial)).toEqual(["listen-1", "wear-1", "watch-1"]);
   });
 
+  it("ranks by stored sharedTagCount instead of the truncated tag list", () => {
+    const seedTags = new Set(["pop", "drama"]);
+    const truncated = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    expect(
+      deterministicAnchors(
+        [
+          { id: "listen-high", name: "L", slot: "listen", tags: truncated, sharedTagCount: 12 },
+          { id: "wear-low", name: "W", slot: "wear", tags: ["Pop"], sharedTagCount: 1 },
+          { id: "watch-trunc", name: "V", slot: "watch", tags: ["Drama"], sharedTagCount: 0 },
+        ],
+        seedTags,
+      ),
+    ).toEqual(["listen-high", "wear-low"]);
+  });
+
   it("does not send filter.exclude.entities for place and widens take to 20", () => {
     const place = insightArgs({
       slot: "do",

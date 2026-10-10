@@ -73,6 +73,7 @@ export const en = {
     explainability: "Explainability",
     narrativeEmpty: "No picks were returned.",
     narrativeTemplate: "Tonight: {names}.",
+    aiNarrative: "Written by AI from the cards above",
     chosenForCity: "Chosen for the city",
     deepCuts: "Deep cuts",
     deepCutsOn: "Deep cuts is on",

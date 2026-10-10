@@ -74,6 +74,7 @@ export const es = {
     explainability: "Explicación",
     narrativeEmpty: "No hubo recomendaciones.",
     narrativeTemplate: "Esta noche: {names}.",
+    aiNarrative: "Redactado por IA a partir de las tarjetas",
     chosenForCity: "Elegido por la ciudad",
     deepCuts: "Descubrir más",
     deepCutsOn: "Descubrir más está activo",

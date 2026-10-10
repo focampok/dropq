@@ -16,6 +16,7 @@ type Latest = {
     label: "A" | "B";
     axis: "root" | "bridge";
     narrative: string | null;
+    llm?: { anchors: "llm" | "fallback"; narrative: "llm" | "template" } | null;
     coverage: { notes?: { en?: string; es?: string }; mode?: "default" | "deep_cuts" } | null;
     items: {
       slot: "watch" | "listen" | "wear" | "do";
@@ -39,6 +40,7 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
   const [pack, setPack] = useState<AssembledPack | null>(null);
   const [anchors, setAnchors] = useState<Latest["anchors"]>([]);
   const [narratives, setNarratives] = useState<{ A?: string | null; B?: string | null }>({});
+  const [aiNarrative, setAiNarrative] = useState<{ A?: boolean; B?: boolean }>({});
   const [error, setError] = useState<string | null>(null);
   const [bridgeMode, setBridgeMode] = useState<"default" | "deep_cuts">("default");
   const [bridgeBusy, setBridgeBusy] = useState(false);
@@ -87,6 +89,7 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
         const body = (await latest.json()) as Latest;
         setAnchors(body.anchors);
         setNarratives({ A: body.plans.find((plan) => plan.label === "A")?.narrative, B: body.plans.find((plan) => plan.label === "B")?.narrative });
+        setAiNarrative(aiFlags(body));
         setPack(toPack(sessionId, body));
         setBridgeMode(modeOf(body));
         const note = body.plans[0]?.coverage?.notes?.[locale] ?? "";
@@ -146,6 +149,7 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
         A: body.plans.find((plan) => plan.label === "A")?.narrative,
         B: body.plans.find((plan) => plan.label === "B")?.narrative,
       });
+      setAiNarrative(aiFlags(body));
       setPack(toPack(sessionId, body));
       setBridgeMode(modeOf(body));
     } catch {
@@ -162,12 +166,20 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
       steps={steps}
       anchors={anchors}
       narratives={narratives}
+      aiNarrative={aiNarrative}
       error={error}
       bridgeMode={bridgeMode}
       bridgeBusy={bridgeBusy}
       onBridgeMode={(mode) => void refine(mode)}
     />
   );
+}
+
+function aiFlags(body: Latest): { A?: boolean; B?: boolean } {
+  return {
+    A: body.plans.find((plan) => plan.label === "A")?.llm?.narrative === "llm",
+    B: body.plans.find((plan) => plan.label === "B")?.llm?.narrative === "llm",
+  };
 }
 
 function modeOf(body: Latest): "default" | "deep_cuts" {

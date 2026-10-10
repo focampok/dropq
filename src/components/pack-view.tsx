@@ -10,6 +10,7 @@ export function PackView({
   steps,
   anchors,
   narratives,
+  aiNarrative,
   error,
   bridgeMode = "default",
   onBridgeMode,
@@ -20,6 +21,7 @@ export function PackView({
   steps?: Partial<Record<StepId, "pending" | "active" | "done" | "skipped" | "error">>;
   anchors?: { rawText: string; resolvedName: string | null; type: string }[];
   narratives?: { A?: string | null; B?: string | null };
+  aiNarrative?: { A?: boolean; B?: boolean };
   error?: string | null;
   bridgeMode?: "default" | "deep_cuts";
   onBridgeMode?: (mode: "default" | "deep_cuts") => void;
@@ -92,6 +94,9 @@ export function PackView({
             </h2>
             {narratives?.[plan.label] ? (
               <p className="mt-2 text-sm text-paper/75">{narratives[plan.label]}</p>
+            ) : null}
+            {aiNarrative?.[plan.label] ? (
+              <p className="mt-1 text-xs text-paper/45">{dictionary.pack.aiNarrative}</p>
             ) : null}
             {plan.label === "B" && onBridgeMode ? (
               <div className="mt-3 flex flex-wrap items-center gap-3">

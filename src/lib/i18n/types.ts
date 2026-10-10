@@ -65,6 +65,7 @@ export type Dictionary = {
     explainability: string;
     narrativeEmpty: string;
     narrativeTemplate: string;
+    aiNarrative: string;
     chosenForCity: string;
     deepCuts: string;
     deepCutsOn: string;

@@ -6,6 +6,16 @@ import { requireSession } from "@/lib/session/require";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
+function packLlm(coverage: unknown): { anchors: "llm" | "fallback"; narrative: "llm" | "template" } | null {
+  if (!coverage || typeof coverage !== "object") return null;
+  const llm = (coverage as { llm?: unknown }).llm;
+  if (!llm || typeof llm !== "object") return null;
+  const anchors = (llm as { anchors?: unknown }).anchors;
+  const narrative = (llm as { narrative?: unknown }).narrative;
+  if ((anchors !== "llm" && anchors !== "fallback") || (narrative !== "llm" && narrative !== "template")) return null;
+  return { anchors, narrative };
+}
+
 export async function GET(request: Request, context: RouteContext) {
   const limited = enforceRateLimit(request, "other");
   if (limited) return limited;
@@ -38,6 +48,7 @@ export async function GET(request: Request, context: RouteContext) {
       axis: pack.axis,
       narrative: pack.narrative,
       coverage: pack.coverage,
+      llm: packLlm(pack.coverage),
       items: pack.items.map((item) => ({
         slot: item.slot,
         hop: item.hop,

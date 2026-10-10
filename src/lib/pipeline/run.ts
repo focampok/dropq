@@ -14,7 +14,7 @@ import {
   BRIDGE_VARIANT,
 } from "@/lib/pipeline/config";
 import { countSharedTags } from "@/lib/pipeline/anchors";
-import { pickBridgeAnchors, narratePlan } from "@/lib/pipeline/llm";
+import { chooseBridgeAnchors, composeNarrative, type CoverageLlm, type LlmFailure } from "@/lib/pipeline/llm";
 import { fillPlaceSlot, placeOmittedNote, type PlaceStages } from "@/lib/pipeline/place";
 import {
   insightArgs,
@@ -35,6 +35,8 @@ export type Progress = {
   status: "active" | "done" | "skipped" | "error";
   detail?: string;
   packIds?: string[];
+  llmMs?: number;
+  llmFallback?: string;
 };
 
 type ResolvedAnchor = {
@@ -191,9 +193,9 @@ export async function runPipeline(
 
   const anchorTags = new Set(resolved.flatMap((seed) => seed.tags.map((tag) => tag.toLowerCase())));
   emit({ step: "pick_bridge_anchors", status: "active" });
-  const anchorIds = expired()
-    ? []
-    : await pickBridgeAnchors(
+  const anchorChoice = expired()
+    ? { ids: [] as string[], source: "fallback" as const, ms: 0 }
+    : await chooseBridgeAnchors(
         (["watch", "listen", "wear"] as const).flatMap((slot) => {
           const hit = roots.get(slot)?.[0];
           return hit ? [{ id: hit.entityId, name: hit.name, slot, tags: hit.tags }] : [];
@@ -201,6 +203,10 @@ export async function runPipeline(
         anchorTags,
         options?.anchorRule,
       );
+  const anchorIds = anchorChoice.ids;
+  const llmFailures: LlmFailure[] = [];
+  if (anchorChoice.failure) llmFailures.push(anchorChoice.failure);
+  let llmMs = anchorChoice.ms;
   emit({ step: "pick_bridge_anchors", status: "done", detail: anchorIds.join(",") });
 
   emit({ step: "insights_hop1", status: "active" });
@@ -247,17 +253,25 @@ export async function runPipeline(
   emit({ step: "assemble", status: "done" });
   emit({ step: "enrich", status: "skipped" });
 
-  const narratives = {
-    A: await narratePlan({
-      locale,
-      names: assembled.packs[0]?.items.map((item) => item.name) ?? [],
-      allowed: allowedNames(resolved, assembled),
-    }),
-    B: await narratePlan({
-      locale,
-      names: assembled.packs[1]?.items.map((item) => item.name) ?? [],
-      allowed: allowedNames(resolved, assembled),
-    }),
+  const allowed = allowedNames(resolved, assembled);
+  const narrativeA = await composeNarrative({
+    locale,
+    names: assembled.packs[0]?.items.map((item) => item.name) ?? [],
+    allowed,
+  });
+  const narrativeB = await composeNarrative({
+    locale,
+    names: assembled.packs[1]?.items.map((item) => item.name) ?? [],
+    allowed,
+  });
+  llmMs += narrativeA.ms + narrativeB.ms;
+  if (narrativeA.failure) llmFailures.push(narrativeA.failure);
+  if (narrativeB.failure) llmFailures.push(narrativeB.failure);
+  const narratives = { A: narrativeA.text, B: narrativeB.text };
+  const llm = {
+    anchors: anchorChoice.source,
+    narrativeA: narrativeA.source,
+    narrativeB: narrativeB.source,
   };
   const packIds = await persist(
     sessionId,
@@ -268,8 +282,15 @@ export async function runPipeline(
     narratives,
     assembled.coverage.notes,
     locale,
+    llm,
   );
-  emit({ step: "done", status: "done", packIds });
+  emit({
+    step: "done",
+    status: "done",
+    packIds,
+    llmMs,
+    ...(llmFailures.length > 0 ? { llmFallback: llmFailures.join(",") } : {}),
+  });
   return { packIds };
 }
 
@@ -536,6 +557,14 @@ function readPlanCoverage(value: unknown): PlanCoverage {
   return value as PlanCoverage;
 }
 
+function readCoverageLlm(value: unknown): CoverageLlm | null {
+  if (!value || typeof value !== "object") return null;
+  const anchors = (value as { anchors?: unknown }).anchors;
+  const narrative = (value as { narrative?: unknown }).narrative;
+  if ((anchors !== "llm" && anchors !== "fallback") || (narrative !== "llm" && narrative !== "template")) return null;
+  return { anchors, narrative };
+}
+
 function readBridgeSnapshot(value: unknown): BridgeSnapshotItem[] | null {
   if (!Array.isArray(value) || value.length === 0) return null;
   const items: BridgeSnapshotItem[] = [];
@@ -607,10 +636,14 @@ function planCoverage(
   label: "A" | "B",
   items: BridgeItem[],
   locale: "en" | "es",
+  llm?: { anchors: "llm" | "fallback"; narrativeA: "llm" | "template"; narrativeB: "llm" | "template" },
 ): Prisma.InputJsonValue {
-  if (label !== "B") return coverage as Prisma.InputJsonValue;
+  const withLlm = llm
+    ? { ...coverage, llm: { anchors: llm.anchors, narrative: label === "B" ? llm.narrativeB : llm.narrativeA } }
+    : coverage;
+  if (label !== "B") return withLlm as Prisma.InputJsonValue;
   return {
-    ...coverage,
+    ...withLlm,
     bridgeMode: "default",
     defaultBridge: serializeBridgeItems(items, locale),
   } as Prisma.InputJsonValue;
@@ -621,6 +654,7 @@ function coverageWithSnapshots(
   coverage: { notes: { en: string; es: string }; removedFromBridge: string[]; mode?: BridgeMode },
   mode: BridgeMode,
   replacement: BridgeSnapshotItem[] | null,
+  llm?: CoverageLlm,
 ): Prisma.InputJsonValue {
   const next: Record<string, unknown> = {
     notes: coverage.notes,
@@ -630,7 +664,8 @@ function coverageWithSnapshots(
   };
   if (previous.defaultBridge) next.defaultBridge = previous.defaultBridge;
   if (previous.deepBridge) next.deepBridge = previous.deepBridge;
-  if (previous.llm) next.llm = previous.llm;
+  if (llm) next.llm = llm;
+  else if (previous.llm) next.llm = previous.llm;
   if (replacement) next[mode === "default" ? "defaultBridge" : "deepBridge"] = replacement;
   return next as Prisma.InputJsonValue;
 }
@@ -679,6 +714,7 @@ async function persist(
   narratives: { A: string; B: string } | [],
   notes: { en: string; es: string },
   locale: "en" | "es",
+  llm?: { anchors: "llm" | "fallback"; narrativeA: "llm" | "template"; narrativeB: "llm" | "template" },
 ): Promise<string[]> {
   const packs = Array.isArray(assembled) ? [] : assembled.packs;
   const story = Array.isArray(narratives) ? { A: "", B: "" } : narratives;
@@ -694,7 +730,7 @@ async function persist(
           axis: pack.axis,
           status: "ready",
           narrative: story[pack.label] || null,
-          coverage: planCoverage(coverage, pack.label, pack.items, locale),
+          coverage: planCoverage(coverage, pack.label, pack.items, locale, llm),
           items: {
             create: pack.items.map((item, position) => ({
               slot: item.slot,
@@ -723,7 +759,9 @@ async function persist(
             label,
             axis: label === "A" ? "root" : "bridge",
             status: "ready",
-            coverage: { notes } as Prisma.InputJsonValue,
+            coverage: (llm
+              ? { notes, llm: { anchors: llm.anchors, narrative: label === "A" ? llm.narrativeA : llm.narrativeB } }
+              : { notes }) as Prisma.InputJsonValue,
           },
         });
         created.push(row.id);
@@ -755,7 +793,11 @@ async function persistMock(sessionId: string, emit: (event: Progress) => void): 
           axis: pack.axis,
           status: "ready",
           narrative: null,
-          coverage: planCoverage(assembled.coverage, pack.label, pack.items, "en"),
+          coverage: planCoverage(assembled.coverage, pack.label, pack.items, "en", {
+            anchors: "fallback",
+            narrativeA: "template",
+            narrativeB: "template",
+          }),
           items: {
             create: pack.items.map((item, position) => ({
               slot: item.slot,
@@ -833,7 +875,7 @@ export async function refineBridge(
     });
     const replacement = packsToWrite(assembled);
     emit({ step: "assemble", status: "done" });
-    const narrative = await narratePlan({
+    const narration = await composeNarrative({
       locale,
       names: replacement.items.map((item) => item.name),
       allowed: [
@@ -843,14 +885,24 @@ export async function refineBridge(
         session.city,
       ],
     });
+    const kept = readCoverageLlm(previous.llm);
     await writeBridge(
       bridgeRow.id,
-      narrative,
-      coverageWithSnapshots(previous, assembled.coverage, mode, null),
+      narration.text,
+      coverageWithSnapshots(previous, assembled.coverage, mode, null, {
+        anchors: kept?.anchors ?? "fallback",
+        narrative: narration.source,
+      }),
       replacement.items,
       locale,
     );
-    emit({ step: "done", status: "done", packIds: [root.id, bridgeRow.id] });
+    emit({
+      step: "done",
+      status: "done",
+      packIds: [root.id, bridgeRow.id],
+      llmMs: narration.ms,
+      ...(narration.failure ? { llmFallback: narration.failure } : {}),
+    });
     return { packIds: [root.id, bridgeRow.id] };
   }
 
@@ -875,9 +927,10 @@ export async function refineBridge(
     ];
   });
   const seedTags = qlooApiKey() ? await seedTagSet(session.seeds) : new Set<string>();
-  const anchorIds = qlooApiKey()
-    ? await pickBridgeAnchors(candidates, seedTags)
-    : candidates.map((item) => item.id);
+  const anchorChoice = qlooApiKey()
+    ? await chooseBridgeAnchors(candidates, seedTags)
+    : { ids: candidates.map((item) => item.id), source: "fallback" as const, ms: 0 };
+  const anchorIds = anchorChoice.ids;
   emit({ step: "pick_bridge_anchors", status: "done", detail: anchorIds.join(",") });
 
   emit({ step: "insights_hop1", status: "active" });
@@ -923,7 +976,7 @@ export async function refineBridge(
   const replacement = packsToWrite(assembled);
   emit({ step: "assemble", status: "done" });
 
-  const narrative = await narratePlan({
+  const narration = await composeNarrative({
     locale,
     names: replacement.items.map((item) => item.name),
     allowed: [
@@ -933,14 +986,24 @@ export async function refineBridge(
       session.city,
     ],
   });
+  const llmFailures = [anchorChoice.failure, narration.failure].filter((failure): failure is LlmFailure => Boolean(failure));
   await writeBridge(
     bridgeRow.id,
-    narrative,
-    coverageWithSnapshots(previous, assembled.coverage, mode, serializeBridgeItems(replacement.items, locale)),
+    narration.text,
+    coverageWithSnapshots(previous, assembled.coverage, mode, serializeBridgeItems(replacement.items, locale), {
+      anchors: anchorChoice.source,
+      narrative: narration.source,
+    }),
     replacement.items,
     locale,
   );
-  emit({ step: "done", status: "done", packIds: [root.id, bridgeRow.id] });
+  emit({
+    step: "done",
+    status: "done",
+    packIds: [root.id, bridgeRow.id],
+    llmMs: anchorChoice.ms + narration.ms,
+    ...(llmFailures.length > 0 ? { llmFallback: llmFailures.join(",") } : {}),
+  });
   return { packIds: [root.id, bridgeRow.id] };
 }
 

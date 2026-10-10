@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { anchorsForRule, deterministicAnchors, validAnchorIds } from "@/lib/pipeline/anchors";
-import { narrativeUsesOnlyKnownNames } from "@/lib/pipeline/llm";
+import { substituteTokens, tokensIn, validateNarrative } from "@/lib/pipeline/llm";
 import { DEMO_PRESETS } from "@/lib/presets";
 import { BRIDGE_ANCHOR_RULE, PINNED_PRESETS, PLACE_RADIUS_FALLBACK_M } from "@/lib/pipeline/config";
 import { packsToWrite } from "@/lib/pipeline/run";
@@ -80,24 +80,35 @@ describe("pipeline decisions", () => {
   });
 
   it("falls back when the model returns an id that was not offered", async () => {
+    vi.stubEnv("LLM_PROVIDER", "nebius");
     vi.stubEnv("NEBIUS_API_KEY", "test");
     vi.stubEnv("NEBIUS_BASE_URL", "https://example.test/v1");
     vi.stubEnv("NEBIUS_MODEL", "test-model");
     vi.doMock("ai", () => ({
-      generateObject: vi.fn(async () => {
-        throw new Error("unsupported");
-      }),
-      generateText: vi.fn(async () => ({ text: '{"ids":["not-a-real-id","watch-1"]}' })),
+      generateObject: vi.fn(async () => ({ object: { anchorIds: ["not-a-real-id", "watch-1"], reason: "" } })),
     }));
     vi.resetModules();
     const { pickBridgeAnchors: pick } = await import("@/lib/pipeline/llm");
     await expect(pick(candidates)).resolves.toEqual(anchorsForRule(candidates));
     vi.unstubAllEnvs();
+    vi.doUnmock("ai");
+    vi.resetModules();
   });
 
-  it("rejects a narrative that introduces an unknown name", () => {
-    expect(narrativeUsesOnlyKnownNames("Tonight with Bad Bunny.", ["Bad Bunny"])).toBe(true);
-    expect(narrativeUsesOnlyKnownNames("Tonight with Shakira.", ["Bad Bunny"])).toBe(false);
+  it("replaces tokens with the pack's own names and rejects an unknown token", () => {
+    const plan = {
+      label: "A" as const,
+      city: "New York",
+      anchors: [{ name: "Chainsaw Man" }, { name: "Uniqlo" }],
+      slots: { watch: "Hell's Paradise", listen: "Claris" },
+    };
+    expect(substituteTokens("[[city]]: [[watch]] + [[listen]]", plan)).toBe(
+      "New York: Hell's Paradise + Claris",
+    );
+    expect(tokensIn("[[watch]] and [[nope]]")).toEqual(["watch", "nope"]);
+    expect(validateNarrative("[[nope]] wins.", plan, "en", 280)).toBe("unknown_token");
+    expect(validateNarrative("[[watch]] then [[watch]].", plan, "en", 280)).toBe("repeated_token");
+    expect(validateNarrative("A night with no tokens.", plan, "en", 280)).toBeNull();
   });
 
   it("passes Roots ids to hop 1 as filter.exclude.entities", () => {

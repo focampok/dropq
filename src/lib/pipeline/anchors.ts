@@ -1,3 +1,5 @@
+import { BRIDGE_ANCHOR_RULE, WATCH_ANCHOR_MIN_SHARED } from "@/lib/pipeline/config";
+
 export type AnchorCandidate = {
   id: string;
   name: string;
@@ -62,6 +64,39 @@ export function deterministicAnchors(
     usedSlots.add(slot);
     if (chosen.length === 3) break;
   }
+  return chosen;
+}
+
+function bestInSlot(
+  candidates: AnchorCandidate[],
+  slot: "listen" | "wear" | "watch",
+  seedTags: Set<string>,
+): { id: string; shared: number } | null {
+  const ranked = candidates
+    .filter((candidate) => candidate.slot === slot)
+    .map((candidate) => ({ id: candidate.id, shared: sharedTagCount(candidate, seedTags) }))
+    .sort((left, right) => right.shared - left.shared);
+  return ranked[0] ?? null;
+}
+
+/**
+ * Rule B takes the strongest listen and wear, plus watch when it clears the shared-tag
+ * minimum. Do is never an anchor. Fewer than two anchors falls back to rule A.
+ */
+export function anchorsForRule(
+  candidates: AnchorCandidate[],
+  seedTags: Set<string> = new Set(),
+  rule: "A" | "B" = BRIDGE_ANCHOR_RULE,
+): string[] {
+  if (rule === "A") return deterministicAnchors(candidates, seedTags);
+  const chosen: string[] = [];
+  const listen = bestInSlot(candidates, "listen", seedTags);
+  const wear = bestInSlot(candidates, "wear", seedTags);
+  if (listen) chosen.push(listen.id);
+  if (wear) chosen.push(wear.id);
+  const watch = bestInSlot(candidates, "watch", seedTags);
+  if (watch && watch.shared >= WATCH_ANCHOR_MIN_SHARED) chosen.push(watch.id);
+  if (chosen.length < 2) return deterministicAnchors(candidates, seedTags);
   return chosen;
 }
 

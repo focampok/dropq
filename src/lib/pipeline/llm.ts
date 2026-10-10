@@ -2,11 +2,8 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import { getDictionary, type Locale } from "@/lib/i18n";
-import {
-  deterministicAnchors,
-  validAnchorIds,
-  type AnchorCandidate,
-} from "@/lib/pipeline/anchors";
+import { anchorsForRule, validAnchorIds, type AnchorCandidate } from "@/lib/pipeline/anchors";
+import { BRIDGE_ANCHOR_RULE } from "@/lib/pipeline/config";
 
 const idSchema = z.object({
   ids: z.array(z.string()).min(2).max(3),
@@ -48,8 +45,9 @@ async function readStructured<T>(prompt: string, schema: z.ZodType<T>): Promise<
 export async function pickBridgeAnchors(
   candidates: AnchorCandidate[],
   seedTags: Set<string> = new Set(),
+  rule: "A" | "B" = BRIDGE_ANCHOR_RULE,
 ): Promise<string[]> {
-  const fallback = deterministicAnchors(candidates, seedTags);
+  const fallback = anchorsForRule(candidates, seedTags, rule);
   if (!llmConfigured() || candidates.length === 0) return fallback;
   try {
     const object = await readStructured(

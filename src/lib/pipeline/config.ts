@@ -34,6 +34,17 @@ export const DO_EXCLUDE_TAG_KEYWORDS = ["hotel", "lodging", "resort", "motel", "
  */
 export const DEEP_CUTS_POPULARITY_MAX = 0.9;
 
+/**
+ * Bridge anchors. "A" ranks every slot by shared tags. "B" keeps the best listen and wear,
+ * and adds watch only when it shares at least WATCH_ANCHOR_MIN_SHARED tags.
+ * Mean shared tags on the Bridge card (listen / wear): roots-gt-la A 18/3 vs B 18/4,
+ * latin-tour-houston A 1/19 vs B 3/66. Both kept watch, listen, and wear, and A≠B held.
+ * fandom-con-nyc returned no Bridge cards before the 24-call cap, so it does not pass.
+ * Two presets pass, so the default is B.
+ */
+export const BRIDGE_ANCHOR_RULE: "A" | "B" = "B";
+export const WATCH_ANCHOR_MIN_SHARED = 5;
+
 export const PLACE_POINTS = {
   "Los Angeles": { lat: 34.0522, lon: -118.2437 },
   Houston: { lat: 29.7604, lon: -95.3698 },

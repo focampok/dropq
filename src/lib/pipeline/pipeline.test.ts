@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { deterministicAnchors, validAnchorIds } from "@/lib/pipeline/anchors";
+import { anchorsForRule, deterministicAnchors, validAnchorIds } from "@/lib/pipeline/anchors";
 import { narrativeUsesOnlyKnownNames } from "@/lib/pipeline/llm";
 import { DEMO_PRESETS } from "@/lib/presets";
-import { PINNED_PRESETS, PLACE_RADIUS_FALLBACK_M } from "@/lib/pipeline/config";
+import { BRIDGE_ANCHOR_RULE, PINNED_PRESETS, PLACE_RADIUS_FALLBACK_M } from "@/lib/pipeline/config";
 import { packsToWrite } from "@/lib/pipeline/run";
 import { insightArgs, loadPlaceHits, loadWatchHits, locationKey } from "@/lib/pipeline/requests";
 import { assemblePack } from "@/lib/pack/assemble";
@@ -91,7 +91,7 @@ describe("pipeline decisions", () => {
     }));
     vi.resetModules();
     const { pickBridgeAnchors: pick } = await import("@/lib/pipeline/llm");
-    await expect(pick(candidates)).resolves.toEqual(["listen-1", "wear-1", "watch-1"]);
+    await expect(pick(candidates)).resolves.toEqual(anchorsForRule(candidates));
     vi.unstubAllEnvs();
   });
 
@@ -285,5 +285,41 @@ describe("round 3 quality", () => {
 describe("anchor validation", () => {
   it("rejects ids from the same slot", () => {
     expect(validAnchorIds(candidates, ["watch-1", "watch-1"])).toBeNull();
+  });
+});
+
+describe("bridge anchor rule B", () => {
+  const weakWatch = { id: "watch-weak", name: "Show", slot: "watch" as const, tags: ["Drama"], sharedTagCount: 2 };
+  const strongWatch = { id: "watch-strong", name: "Show", slot: "watch" as const, tags: ["Drama"], sharedTagCount: 5 };
+  const listen = { id: "listen-best", name: "Artist", slot: "listen" as const, tags: ["Pop"], sharedTagCount: 4 };
+  const listenLow = { id: "listen-low", name: "Other", slot: "listen" as const, tags: ["Pop"], sharedTagCount: 1 };
+  const wear = { id: "wear-best", name: "Brand", slot: "wear" as const, tags: ["Cloth"], sharedTagCount: 3 };
+
+  it("picks the best listen and wear and skips a weak watch", () => {
+    expect(anchorsForRule([weakWatch, listenLow, listen, wear], new Set(), "B")).toEqual([
+      "listen-best",
+      "wear-best",
+    ]);
+  });
+
+  it("includes watch when it shares at least five tags", () => {
+    expect(anchorsForRule([strongWatch, listen, wear], new Set(), "B")).toEqual([
+      "listen-best",
+      "wear-best",
+      "watch-strong",
+    ]);
+  });
+
+  it("falls back to rule A when fewer than two anchors remain", () => {
+    const onlyWatch = [strongWatch];
+    expect(anchorsForRule(onlyWatch, new Set(["drama"]), "B")).toEqual(
+      deterministicAnchors(onlyWatch, new Set(["drama"])),
+    );
+  });
+
+  it("follows BRIDGE_ANCHOR_RULE", () => {
+    const pool = [weakWatch, listen, wear];
+    expect(anchorsForRule(pool, new Set())).toEqual(anchorsForRule(pool, new Set(), BRIDGE_ANCHOR_RULE));
+    expect(anchorsForRule(pool, new Set(), "A")).not.toEqual(anchorsForRule(pool, new Set(), "B"));
   });
 });

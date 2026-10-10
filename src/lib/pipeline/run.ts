@@ -149,7 +149,7 @@ export async function runPipeline(
   sessionId: string,
   emit: (event: Progress) => void,
   signal?: AbortSignal,
-  options?: { bridgeVariant?: "a" | "deep" },
+  options?: { bridgeVariant?: "a" | "deep"; anchorRule?: "A" | "B" },
 ): Promise<{ packIds: string[] }> {
   if (!qlooApiKey()) return persistMock(sessionId, emit);
   const started = Date.now();
@@ -199,6 +199,7 @@ export async function runPipeline(
           return hit ? [{ id: hit.entityId, name: hit.name, slot, tags: hit.tags }] : [];
         }),
         anchorTags,
+        options?.anchorRule,
       );
   emit({ step: "pick_bridge_anchors", status: "done", detail: anchorIds.join(",") });
 

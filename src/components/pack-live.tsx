@@ -1,12 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PackView } from "@/components/pack-view";
 import { getDictionary, type Locale } from "@/lib/i18n";
 import type { StepId } from "@/lib/i18n/types";
 import type { AssembledPack } from "@/lib/pack/assemble";
 
 type StepState = "pending" | "active" | "done" | "skipped" | "error";
+
+export type PlanLlm = {
+  anchors: "llm" | "fallback";
+  anchorSource: "llm" | "rule_b_fallback";
+  narrative: "llm" | "template";
+  headline: string;
+  provider: string | null;
+  offReason: string | null;
+  failures: string[];
+  ruleB?: unknown;
+};
 
 type Latest = {
   city: string;
@@ -16,7 +27,7 @@ type Latest = {
     label: "A" | "B";
     axis: "root" | "bridge";
     narrative: string | null;
-    llm?: { anchors: "llm" | "fallback"; narrative: "llm" | "template" } | null;
+    llm?: PlanLlm | null;
     coverage: { notes?: { en?: string; es?: string }; mode?: "default" | "deep_cuts" } | null;
     items: {
       slot: "watch" | "listen" | "wear" | "do";
@@ -40,10 +51,32 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
   const [pack, setPack] = useState<AssembledPack | null>(null);
   const [anchors, setAnchors] = useState<Latest["anchors"]>([]);
   const [narratives, setNarratives] = useState<{ A?: string | null; B?: string | null }>({});
+  const [headlines, setHeadlines] = useState<{ A?: string; B?: string }>({});
   const [aiNarrative, setAiNarrative] = useState<{ A?: boolean; B?: boolean }>({});
   const [error, setError] = useState<string | null>(null);
   const [bridgeMode, setBridgeMode] = useState<"default" | "deep_cuts">("default");
   const [bridgeBusy, setBridgeBusy] = useState(false);
+
+  // Applies one snapshot of the stored packs. It runs once at assemble, when only the
+  // template narrative exists, and again at narrate, when the LLM text replaces it.
+  const applyLatest = useCallback(
+    (body: Latest) => {
+      setAnchors(body.anchors);
+      setNarratives({
+        A: body.plans.find((plan) => plan.label === "A")?.narrative,
+        B: body.plans.find((plan) => plan.label === "B")?.narrative,
+      });
+      setHeadlines({
+        A: body.plans.find((plan) => plan.label === "A")?.llm?.headline || "",
+        B: body.plans.find((plan) => plan.label === "B")?.llm?.headline || "",
+      });
+      setAiNarrative(aiFlags(body));
+      setPack(toPack(sessionId, body));
+      setBridgeMode(modeOf(body));
+      return body;
+    },
+    [sessionId],
+  );
 
   useEffect(() => {
     if (!sessionId) {
@@ -53,6 +86,12 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
     const controller = new AbortController();
     void run(controller.signal);
     return () => controller.abort();
+
+    async function load(signal: AbortSignal): Promise<Latest | null> {
+      const latest = await fetch(`/api/session/${sessionId}/packs/latest`, { signal });
+      if (!latest.ok) return null;
+      return applyLatest((await latest.json()) as Latest);
+    }
 
     async function run(signal: AbortSignal) {
       try {
@@ -81,17 +120,18 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
               setError(dictionary.pack.quotaLow);
             } else if (event.step && event.step !== "error" && event.status) {
               setSteps((current) => ({ ...current, [event.step as StepId]: event.status }));
+              if (event.step === "assemble" && event.status === "done") {
+                // First paint: the pack is stored with the template narrative already.
+                await load(signal);
+              }
+              if (event.step === "narrate" && event.status === "done") {
+                await load(signal);
+              }
             }
           }
         }
-        const latest = await fetch(`/api/session/${sessionId}/packs/latest`, { signal });
-        if (!latest.ok) return;
-        const body = (await latest.json()) as Latest;
-        setAnchors(body.anchors);
-        setNarratives({ A: body.plans.find((plan) => plan.label === "A")?.narrative, B: body.plans.find((plan) => plan.label === "B")?.narrative });
-        setAiNarrative(aiFlags(body));
-        setPack(toPack(sessionId, body));
-        setBridgeMode(modeOf(body));
+        const body = await load(signal);
+        if (!body) return;
         const note = body.plans[0]?.coverage?.notes?.[locale] ?? "";
         if (note.toLowerCase().includes("timed out") || note.toLowerCase().includes("agotó")) {
           setError(dictionary.pack.timeout);
@@ -103,7 +143,7 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
         if (!signal.aborted) setError(dictionary.onboarding.saveError);
       }
     }
-  }, [dictionary, locale, sessionId]);
+  }, [applyLatest, dictionary, locale, sessionId]);
 
   async function refine(mode: "default" | "deep_cuts") {
     setBridgeBusy(true);
@@ -138,24 +178,26 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
             setError(event.detail === "QUOTA_LOW" ? dictionary.pack.quotaLow : dictionary.onboarding.saveError);
           } else if (event.step && event.status) {
             setSteps((current) => ({ ...current, [event.step as StepId]: event.status }));
+            if (
+              (event.step === "assemble" || event.step === "narrate") &&
+              event.status === "done"
+            ) {
+              await load();
+            }
           }
         }
       }
-      const latest = await fetch(`/api/session/${sessionId}/packs/latest`);
-      if (!latest.ok) return;
-      const body = (await latest.json()) as Latest;
-      setAnchors(body.anchors);
-      setNarratives({
-        A: body.plans.find((plan) => plan.label === "A")?.narrative,
-        B: body.plans.find((plan) => plan.label === "B")?.narrative,
-      });
-      setAiNarrative(aiFlags(body));
-      setPack(toPack(sessionId, body));
-      setBridgeMode(modeOf(body));
+      await load();
     } catch {
       setError(dictionary.onboarding.saveError);
     } finally {
       setBridgeBusy(false);
+    }
+
+    async function load(): Promise<void> {
+      const latest = await fetch(`/api/session/${sessionId}/packs/latest`);
+      if (!latest.ok) return;
+      applyLatest((await latest.json()) as Latest);
     }
   }
 
@@ -166,6 +208,7 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
       steps={steps}
       anchors={anchors}
       narratives={narratives}
+      headlines={headlines}
       aiNarrative={aiNarrative}
       error={error}
       bridgeMode={bridgeMode}

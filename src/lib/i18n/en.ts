@@ -71,9 +71,14 @@ export const en = {
     hitTags: "Tags",
     sharedTags: "Shared tags",
     explainability: "Explainability",
+    anchorEvidence: "Anchor evidence",
+    weakSignal: "weak signal",
+    headline: "Headline",
     narrativeEmpty: "No picks were returned.",
     narrativeTemplate: "Tonight: {names}.",
-    aiNarrative: "Written by AI from the cards above",
+    aiNarrative: "AI",
+    aiNarrativeHint:
+      "Names come from Qloo; the AI only wrote the connecting sentence from the cards above.",
     chosenForCity: "Chosen for the city",
     deepCuts: "Deep cuts",
     deepCutsOn: "Deep cuts is on",
@@ -85,6 +90,7 @@ export const en = {
       insights_hop1: "Insights, hop 1",
       assemble: "Assemble",
       enrich: "Enrich",
+      narrate: "Narrate",
       done: "Done",
     },
     confidenceValue: {

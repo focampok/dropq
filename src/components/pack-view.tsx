@@ -1,8 +1,19 @@
+import { useState } from "react";
+import { BookOpen, Headphones, Landmark, Shirt } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { getDictionary, type Locale } from "@/lib/i18n";
 import { STEP_IDS, type StepId } from "@/lib/i18n/types";
 import { SLOTS, type AssembledItem, type AssembledPack } from "@/lib/pack/assemble";
+
+type SlotName = (typeof SLOTS)[number];
+
+const SLOT_ICON: Record<SlotName, typeof BookOpen> = {
+  watch: BookOpen,
+  listen: Headphones,
+  wear: Shirt,
+  do: Landmark,
+};
 
 export function PackView({
   locale,
@@ -10,6 +21,7 @@ export function PackView({
   steps,
   anchors,
   narratives,
+  headlines,
   aiNarrative,
   error,
   bridgeMode = "default",
@@ -21,6 +33,7 @@ export function PackView({
   steps?: Partial<Record<StepId, "pending" | "active" | "done" | "skipped" | "error">>;
   anchors?: { rawText: string; resolvedName: string | null; type: string }[];
   narratives?: { A?: string | null; B?: string | null };
+  headlines?: { A?: string; B?: string };
   aiNarrative?: { A?: boolean; B?: boolean };
   error?: string | null;
   bridgeMode?: "default" | "deep_cuts";
@@ -92,11 +105,21 @@ export function PackView({
               <span className="mr-2 text-paper/40">{plan.label}</span>
               {dictionary.plans[plan.label]}
             </h2>
-            {narratives?.[plan.label] ? (
-              <p className="mt-2 text-sm text-paper/75">{narratives[plan.label]}</p>
+            {headlines?.[plan.label] ? (
+              <p className="mt-1 text-lg text-paper/90">{headlines[plan.label]}</p>
             ) : null}
-            {aiNarrative?.[plan.label] ? (
-              <p className="mt-1 text-xs text-paper/45">{dictionary.pack.aiNarrative}</p>
+            {narratives?.[plan.label] ? (
+              <p className="mt-2 text-sm text-paper/75">
+                {narratives[plan.label]}
+                {aiNarrative?.[plan.label] ? (
+                  <span
+                    className="ml-2 rounded border border-paper/25 px-1.5 py-0.5 align-middle font-mono text-[10px] uppercase tracking-wide text-paper/60"
+                    title={dictionary.pack.aiNarrativeHint}
+                  >
+                    {dictionary.pack.aiNarrative}
+                  </span>
+                ) : null}
+              </p>
             ) : null}
             {plan.label === "B" && onBridgeMode ? (
               <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -139,10 +162,12 @@ export function PackView({
 
 function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
   const dictionary = getDictionary(locale);
+  const [broken, setBroken] = useState(false);
   const affinity =
     item.affinity === null || item.affinity === undefined
       ? dictionary.pack.noAffinity
       : String(item.affinity);
+  const anchor = anchorOf(item);
 
   return (
     <Card>
@@ -162,21 +187,7 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex gap-3">
-          {item.slot !== "do" && item.imageUrl ? (
-            // Hosts for Qloo images are confirmed after the smoke run.
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={item.imageUrl}
-              alt=""
-              className="h-20 w-20 rounded-md object-cover"
-            />
-          ) : (
-            <div
-              role="img"
-              aria-label={dictionary.pack.noImage}
-              className="h-20 w-20 rounded-md border border-dashed border-line bg-ink/5"
-            />
-          )}
+          <CardImage item={item} broken={broken} onBroken={() => setBroken(true)} locale={locale} />
           <p className="text-sm leading-relaxed text-ink/75">{item.explain[locale]}</p>
         </div>
         <div className="rounded-md bg-ink/[0.04] p-3">
@@ -200,6 +211,19 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
             <dd>{tagsOf(item, "hitTags")}</dd>
             <dt className="text-ink/50">{dictionary.pack.sharedTags}</dt>
             <dd>{tagsOf(item, "sharedTags")}</dd>
+            {anchor ? (
+              <>
+                <dt className="text-ink/50">{dictionary.pack.anchorEvidence}</dt>
+                <dd>
+                  {anchor.sharedTags.length > 0 ? anchor.sharedTags.join(", ") : "—"}
+                  {anchor.confidence === "low" ? (
+                    <span className="ml-2 uppercase tracking-[0.14em] text-stamp">
+                      {dictionary.pack.weakSignal}
+                    </span>
+                  ) : null}
+                </dd>
+              </>
+            ) : null}
             <dt className="text-ink/50">{dictionary.pack.explainability}</dt>
             <dd className="break-all">{explainOf(item)}</dd>
           </dl>
@@ -207,6 +231,62 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
       </CardContent>
     </Card>
   );
+}
+
+/**
+ * Hotlinked Qloo images are not guaranteed to load, so every failure falls back to a
+ * slot icon in a fixed 5:4 box instead of leaving a hole.
+ */
+function CardImage({
+  item,
+  broken,
+  onBroken,
+  locale,
+}: {
+  item: AssembledItem;
+  broken: boolean;
+  onBroken: () => void;
+  locale: Locale;
+}) {
+  const dictionary = getDictionary(locale);
+  const label = `${dictionary.slots[item.slot]} · ${dictionary.pack.noImage}`;
+  if (item.imageUrl && !broken) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={item.imageUrl}
+        alt=""
+        width={80}
+        height={100}
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={onBroken}
+        className="aspect-[4/5] w-20 shrink-0 rounded-md border border-line bg-ink/5 object-cover"
+      />
+    );
+  }
+  const Icon = SLOT_ICON[item.slot];
+  return (
+    <div
+      role="img"
+      aria-label={label}
+      className="flex aspect-[4/5] w-20 shrink-0 items-center justify-center rounded-md border border-dashed border-line bg-ink/5"
+    >
+      <Icon aria-hidden className="h-6 w-6 text-ink/35" />
+    </div>
+  );
+}
+
+function anchorOf(item: AssembledItem): { sharedTags: string[]; confidence: string } | null {
+  const anchor = item.evidence?.anchor;
+  if (!anchor || typeof anchor !== "object" || Array.isArray(anchor)) return null;
+  const record = anchor as { sharedTags?: unknown; confidence?: unknown };
+  return {
+    sharedTags: Array.isArray(record.sharedTags)
+      ? record.sharedTags.filter((tag): tag is string => typeof tag === "string")
+      : [],
+    confidence: typeof record.confidence === "string" ? record.confidence : "",
+  };
 }
 
 function tagsOf(item: AssembledItem, key: "hitTags" | "sharedTags"): string {

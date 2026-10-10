@@ -72,9 +72,14 @@ export const es = {
     hitTags: "Etiquetas",
     sharedTags: "Etiquetas compartidas",
     explainability: "Explicación",
+    anchorEvidence: "Evidencia del ancla",
+    weakSignal: "señal débil",
+    headline: "Titular",
     narrativeEmpty: "No hubo recomendaciones.",
     narrativeTemplate: "Esta noche: {names}.",
-    aiNarrative: "Redactado por IA a partir de las tarjetas",
+    aiNarrative: "IA",
+    aiNarrativeHint:
+      "Los nombres vienen de Qloo; la IA solo escribió la frase que los conecta.",
     chosenForCity: "Elegido por la ciudad",
     deepCuts: "Descubrir más",
     deepCutsOn: "Descubrir más está activo",
@@ -86,6 +91,7 @@ export const es = {
       insights_hop1: "Insights, salto 1",
       assemble: "Armar",
       enrich: "Enriquecer",
+      narrate: "Narrar",
       done: "Listo",
     },
     confidenceValue: {

@@ -7,6 +7,7 @@ export const STEP_IDS = [
   "insights_hop1",
   "assemble",
   "enrich",
+  "narrate",
   "done",
 ] as const;
 
@@ -63,9 +64,13 @@ export type Dictionary = {
     hitTags: string;
     sharedTags: string;
     explainability: string;
+    anchorEvidence: string;
+    weakSignal: string;
+    headline: string;
     narrativeEmpty: string;
     narrativeTemplate: string;
     aiNarrative: string;
+    aiNarrativeHint: string;
     chosenForCity: string;
     deepCuts: string;
     deepCutsOn: string;

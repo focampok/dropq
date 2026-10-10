@@ -6,14 +6,39 @@ import { requireSession } from "@/lib/session/require";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-function packLlm(coverage: unknown): { anchors: "llm" | "fallback"; narrative: "llm" | "template" } | null {
+type PackLlm = {
+  anchors: "llm" | "fallback";
+  anchorSource: "llm" | "rule_b_fallback";
+  narrative: "llm" | "template";
+  headline: string;
+  provider: string | null;
+  offReason: string | null;
+  failures: string[];
+  ruleB?: unknown;
+};
+
+function packLlm(coverage: unknown): PackLlm | null {
   if (!coverage || typeof coverage !== "object") return null;
   const llm = (coverage as { llm?: unknown }).llm;
   if (!llm || typeof llm !== "object") return null;
   const anchors = (llm as { anchors?: unknown }).anchors;
   const narrative = (llm as { narrative?: unknown }).narrative;
   if ((anchors !== "llm" && anchors !== "fallback") || (narrative !== "llm" && narrative !== "template")) return null;
-  return { anchors, narrative };
+  const anchorSource = (llm as { anchorSource?: unknown }).anchorSource;
+  const headline = (llm as { headline?: unknown }).headline;
+  const provider = (llm as { provider?: unknown }).provider;
+  const offReason = (llm as { offReason?: unknown }).offReason;
+  const failures = (llm as { failures?: unknown }).failures;
+  return {
+    anchors,
+    narrative,
+    anchorSource: anchorSource === "llm" ? "llm" : "rule_b_fallback",
+    headline: typeof headline === "string" ? headline : "",
+    provider: typeof provider === "string" ? provider : null,
+    offReason: typeof offReason === "string" ? offReason : null,
+    failures: Array.isArray(failures) ? failures.filter((code): code is string => typeof code === "string") : [],
+    ruleB: (coverage as { ruleB?: unknown }).ruleB,
+  };
 }
 
 export async function GET(request: Request, context: RouteContext) {

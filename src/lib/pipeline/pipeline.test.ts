@@ -155,6 +155,25 @@ describe("round 3 quality", () => {
     expect(pinned?.seeds.some((seed) => seed.rawText === "Gallo")).toBe(false);
   });
 
+  it("keeps the demo and pinned fandom seeds identical and resolvable", () => {
+    const demo = DEMO_PRESETS.find((preset) => preset.id === "fandom-con-nyc");
+    const pinned = PINNED_PRESETS.find((preset) => preset.id === "fandom-con-nyc");
+    expect(demo?.seeds.map((seed) => seed.rawText)).toEqual([
+      "Jujutsu Kaisen",
+      "YOASOBI",
+      "Crunchyroll",
+    ]);
+    expect(demo?.seeds.map((seed) => seed.type)).toEqual([
+      "urn:entity:tv_show",
+      "urn:entity:artist",
+      "urn:entity:brand",
+    ]);
+    expect(pinned?.seeds.map((seed) => seed.rawText)).toEqual(demo?.seeds.map((seed) => seed.rawText));
+    expect(pinned?.seeds.every((seed) => Boolean(seed.entityId))).toBe(true);
+    expect(pinned?.city).toBe("New York");
+    expect(pinned?.eventKind).toBe("con");
+  });
+
   it("falls back to movie only when fewer than 3 tv shows are valid", async () => {
     const calls: string[] = [];
     const short = await loadWatchHits(async (type) => {

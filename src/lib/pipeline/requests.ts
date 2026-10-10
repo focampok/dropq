@@ -3,6 +3,7 @@ import {
   BRIDGE_VARIANT,
   DEEP_CUTS_POPULARITY_MAX,
   PLACE_CATEGORY_TAGS,
+  PLACE_CATEGORY_TAGS_FALLBACK,
   PLACE_POINTS,
   PLACE_RADIUS_METERS,
   PLACE_STRATEGY,
@@ -40,6 +41,19 @@ export function placeCategoryTags(eventKind: string): string[] | null {
   return tags && tags.length > 0 ? [...tags] : null;
 }
 
+export function placeFallbackCategoryTags(eventKind: string): string[] | null {
+  if (eventKind !== "tour" && eventKind !== "con" && eventKind !== "comunidad") return null;
+  const tags = PLACE_CATEGORY_TAGS_FALLBACK[eventKind];
+  return tags && tags.length > 0 ? [...tags] : null;
+}
+
+/** The category sets for the place slot, in the order fillPlaceSlot should try them. */
+export function placeTagSets(eventKind: string): string[][] {
+  return [placeCategoryTags(eventKind) ?? [], placeFallbackCategoryTags(eventKind) ?? []].filter(
+    (tags) => tags.length > 0,
+  );
+}
+
 export function insightArgs(input: {
   slot: PackSlot;
   eventKind: string;
@@ -51,6 +65,7 @@ export function insightArgs(input: {
   bridgeVariant?: BridgeRequestVariant;
   placeMode?: PlaceMode;
   placeRadius?: number;
+  placeTags?: string[];
 }): InsightsParams | null {
   const filterType = input.filterType ?? slotType(input.slot);
   const placeMode = input.placeMode ?? (PLACE_USE_ANCHORS ? "anchors" : "city");
@@ -79,8 +94,8 @@ export function insightArgs(input: {
 
   if (input.slot === "do") {
     if (PLACE_STRATEGY === "none") return null;
-    const tags = placeCategoryTags(input.eventKind);
-    if (tags) args.filterTags = tags;
+    const tags = input.placeTags ?? placeCategoryTags(input.eventKind);
+    if (tags && tags.length > 0) args.filterTags = tags;
     if (placeMode === "anchors") {
       if (input.anchors.length === 0) return null;
       args.signalInterestsEntities = input.anchors;

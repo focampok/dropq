@@ -39,7 +39,7 @@ export const en = {
   presets: {
     "roots-gt-la": "Roots GT → LA",
     "latin-tour-houston": "Latin tour → Houston",
-    "fandom-con-nyc": "Fandom con → NYC",
+    "fandom-con-nyc": "Anime con → NYC",
   },
   slots: {
     watch: "Watch",

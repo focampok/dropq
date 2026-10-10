@@ -22,6 +22,34 @@ export const PLACE_CATEGORY_TAGS: Record<
   comunidad: ["urn:tag:category:place:live_music_venue", "urn:tag:genre:place:nightlife"],
 };
 
+/**
+ * Second place category set, tried only when the first leaves the slot with nothing
+ * usable. Hop 1 for `do` sends the same city request as hop 0, so the New York con
+ * list comes back identical and every hit is already a Roots id; a different category
+ * set is the only way the Bridge can pick up a venue of its own. Verified against
+ * /v2/tags under urn:tag:category:place:*, and only tags that exist there are listed.
+ */
+export const PLACE_CATEGORY_TAGS_FALLBACK: Record<
+  "tour" | "con" | "comunidad",
+  readonly string[] | null
+> = {
+  tour: [
+    "urn:tag:category:place:comic_book_store",
+    "urn:tag:category:place:hobby_store",
+    "urn:tag:category:place:record_store",
+  ],
+  con: [
+    "urn:tag:category:place:comic_book_store",
+    "urn:tag:category:place:hobby_store",
+    "urn:tag:category:place:record_store",
+  ],
+  comunidad: [
+    "urn:tag:category:place:comic_book_store",
+    "urn:tag:category:place:hobby_store",
+    "urn:tag:category:place:record_store",
+  ],
+};
+
 /** R7 live-night with anchors was 40% lodging in Los Angeles, Houston, and New York. */
 export const PLACE_USE_ANCHORS = false;
 
@@ -40,6 +68,8 @@ export const DEEP_CUTS_POPULARITY_MAX = 0.9;
  * Mean shared tags on the Bridge card (listen / wear): roots-gt-la A 18/3 vs B 18/4,
  * latin-tour-houston A 1/19 vs B 3/66. Both kept watch, listen, and wear, and A≠B held.
  * fandom-con-nyc returned no Bridge cards before the 24-call cap, so it does not pass.
+ * (Pass 3d replaced its seeds and gave the place slot a second category set, so the
+ * Bridge now fills; the measurement above is left as it was taken.)
  * Two presets pass, so the default is B.
  */
 export const BRIDGE_ANCHOR_RULE: "A" | "B" = "B";
@@ -128,22 +158,22 @@ export const PINNED_PRESETS: readonly PinnedPreset[] = [
     eventKind: "con",
     seeds: [
       {
-        rawText: "Chainsaw Man",
+        rawText: "Jujutsu Kaisen",
         type: "urn:entity:tv_show",
-        entityId: "042EB535-51B0-4DCF-8B33-1A3466952A56",
-        resolvedName: "Chainsaw Man",
+        entityId: "9328463A-D757-43FE-A7DA-FB2DB77F0B43",
+        resolvedName: "Jujutsu Kaisen",
       },
       {
-        rawText: "Kenshi Yonezu",
+        rawText: "YOASOBI",
         type: "urn:entity:artist",
-        entityId: "59992D0D-01F0-40EB-B587-05DC21051175",
-        resolvedName: "Yonezu Kenshi",
+        entityId: "6D530441-36D4-436B-BE9B-0B07727A30C4",
+        resolvedName: "yoasobi",
       },
       {
-        rawText: "Uniqlo",
+        rawText: "Crunchyroll",
         type: "urn:entity:brand",
-        entityId: "46C9F889-EC89-4715-A767-DEABACF52C41",
-        resolvedName: "Uniqlo",
+        entityId: "FCB213DE-EF8F-4998-8B15-D820DEE34461",
+        resolvedName: "Crunchyroll",
       },
     ],
   },

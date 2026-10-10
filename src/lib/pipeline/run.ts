@@ -25,12 +25,13 @@ import {
   type PlanNarrative,
 } from "@/lib/pipeline/llm";
 import { llmStatus, type LlmProviderId } from "@/lib/llm/provider";
-import { fillPlaceSlot, placeOmittedNote, type PlaceStages } from "@/lib/pipeline/place";
+import { fillPlaceSlot, placeFallbackNote, placeOmittedNote, type PlaceStages } from "@/lib/pipeline/place";
 import {
   insightArgs,
   loadWatchHits,
   locationKey,
   PACK_SLOTS,
+  placeTagSets,
   validNamedHit,
   type BridgeRequestVariant,
   type PackSlot,
@@ -401,8 +402,15 @@ function emptySlots(): Map<PackSlot, Card[]> {
 
 /** States the stage counts and the retry whenever the place slot ends up omitted. */
 function notePlaceOmission(load: SlotLoad, append: (en: string, es: string) => void): void {
-  if (!load.place || load.place.attempt.afterRoots > 0) return;
-  const note = placeOmittedNote(load.place.first, load.place.attempt, PLACE_RADIUS_FALLBACK_M);
+  if (!load.place) return;
+  if (load.place.attempt.afterRoots > 0) {
+    const fallback = placeFallbackNote(load.place.tagSetIndex);
+    if (fallback) append(fallback.en, fallback.es);
+    return;
+  }
+  const note = placeOmittedNote(load.place.first, load.place.attempt, PLACE_RADIUS_FALLBACK_M, {
+    sets: load.place.tagSets,
+  });
   append(note.en, note.es);
 }
 
@@ -462,7 +470,13 @@ async function resolveSeeds(seeds: { id: string; rawText: string }[]): Promise<R
   return resolved;
 }
 
-type PlaceReport = { first: PlaceStages; attempt: PlaceStages; retried: boolean };
+type PlaceReport = {
+  first: PlaceStages;
+  attempt: PlaceStages;
+  retried: boolean;
+  tagSets: number;
+  tagSetIndex: number;
+};
 
 type SlotFetch = { cards: Card[]; place?: PlaceReport };
 
@@ -504,6 +518,7 @@ async function fetchSlot(
     filterType?: "urn:entity:tv_show" | "urn:entity:movie" | "urn:entity:artist" | "urn:entity:brand" | "urn:entity:place",
     placeMode?: "anchors" | "city",
     placeRadius?: number,
+    placeTags?: string[],
   ) => {
     const args = insightArgs({
       slot,
@@ -516,6 +531,7 @@ async function fetchSlot(
       bridgeVariant: hop === 1 ? bridgeVariant : "a",
       placeMode,
       placeRadius,
+      placeTags,
     });
     if (!args) return [] as Card[];
     const variant: BridgeRequestVariant = hop === 1 && bridgeVariant === "deep" ? "deep" : BRIDGE_VARIANT;
@@ -539,14 +555,22 @@ async function fetchSlot(
     return { cards: await loadWatchHits((type) => load(type)) };
   }
   if (slot === "do") {
+    const tagSets = placeTagSets(eventKind);
     const outcome = await fillPlaceSlot({
-      load: (radius) => load("urn:entity:place", "city", radius),
+      load: ({ radius, tags }) => load("urn:entity:place", "city", radius, tags),
       rootsIds: new Set(exclude),
       fallbackRadius: PLACE_RADIUS_FALLBACK_M,
+      tagSets,
     });
     return {
       cards: outcome.cards.map((card) => ({ ...card, chosenByCity: !PLACE_USE_ANCHORS })),
-      place: { first: outcome.first, attempt: outcome.attempt, retried: outcome.retried },
+      place: {
+        first: outcome.first,
+        attempt: outcome.attempt,
+        retried: outcome.retried,
+        tagSets: tagSets.length,
+        tagSetIndex: outcome.tagSetIndex,
+      },
     };
   }
   return { cards: (await load(undefined)).filter(validNamedHit) };

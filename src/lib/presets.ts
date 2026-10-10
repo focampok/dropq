@@ -46,9 +46,9 @@ export const DEMO_PRESETS = [
   {
     id: "fandom-con-nyc",
     seeds: [
-      { rawText: "Chainsaw Man", type: "urn:entity:tv_show" },
-      { rawText: "Kenshi Yonezu", type: "urn:entity:artist" },
-      { rawText: "Uniqlo", type: "urn:entity:brand" },
+      { rawText: "Jujutsu Kaisen", type: "urn:entity:tv_show" },
+      { rawText: "YOASOBI", type: "urn:entity:artist" },
+      { rawText: "Crunchyroll", type: "urn:entity:brand" },
     ],
     city: "New York",
     eventKind: "con",

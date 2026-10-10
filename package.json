@@ -17,6 +17,7 @@
     "smoke": "tsx scripts/smoke-qloo.ts",
     "probe:round2": "tsx scripts/probe-round2.ts",
     "probe:round3": "tsx scripts/probe-round3.ts",
+    "probe:pass3d": "tsx scripts/probe-pass3d.ts",
     "warm": "tsx scripts/warm-presets.ts"
   },
   "dependencies": {

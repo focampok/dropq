@@ -14,6 +14,7 @@ import {
   type LlmCallTrace,
 } from "@/lib/llm/gemini-chain";
 import fixture from "@/lib/pack/fixture.json";
+import { NARRATIVE_WORKED_EXAMPLE } from "@/lib/pipeline/copy-check";
 import {
   anchorsForRule,
   anchorEvidence,
@@ -51,14 +52,10 @@ const TIMEOUT_CODE = "timeout";
  */
 function systemFor(scope: "both" | "bridge"): string {
   const bridge = {
-    bridgeNarrative: "Then [[wear]] leads to [[do]] near [[anchor1]].",
-    bridgeHeadline: "[[do]] in [[city]]",
+    bridgeNarrative: NARRATIVE_WORKED_EXAMPLE.bridgeNarrative,
+    bridgeHeadline: NARRATIVE_WORKED_EXAMPLE.bridgeHeadline,
   };
-  const roots = {
-    rootsNarrative: "[[city]] opens with [[watch]] and [[listen]].",
-    rootsHeadline: "[[watch]] x [[listen]]",
-  };
-  const example = scope === "bridge" ? bridge : { ...roots, ...bridge };
+  const example = scope === "bridge" ? bridge : { ...NARRATIVE_WORKED_EXAMPLE, ...bridge };
   return `Reply with the JSON object only. Example reply: ${JSON.stringify(example)}`;
 }
 

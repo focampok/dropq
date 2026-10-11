@@ -13,6 +13,7 @@
  * That is what the limiter models anyway: one bucket per visitor.
  */
 import { placeTagExcluded } from "../src/lib/pack/assemble";
+import { sharesWordSequence, wordOverlapRatio, workedExampleText } from "../src/lib/pipeline/copy-check";
 import { DEMO_PRESETS, type CityValue, type EventKind } from "../src/lib/presets";
 import { STEP_IDS } from "../src/lib/i18n/types";
 
@@ -131,6 +132,7 @@ type Result = {
   anchorSource: string;
   narrative: string;
   narration: { source: string; failures: string[] }[];
+  texts: string[];
   failures: string[];
 };
 
@@ -214,6 +216,7 @@ async function runPreset(preset: (typeof DEMO_PRESETS)[number]): Promise<Result>
     { source: planA.llm?.narrative ?? "?", failures: planA.llm?.failures ?? [] },
     { source: planB.llm?.narrative ?? "?", failures: planB.llm?.failures ?? [] },
   ];
+  const texts = [planA.narrative, planB.narrative].flatMap((text) => (text?.trim() ? [text.trim()] : []));
 
   const defaultBridge = planB.items.map((item) => item.entityId);
   const rootIdsBefore = planA.items.map((item) => item.entityId);
@@ -233,6 +236,7 @@ async function runPreset(preset: (typeof DEMO_PRESETS)[number]): Promise<Result>
       source: bridge?.llm?.narrative ?? "?",
       failures: bridge?.llm?.failures ?? [],
     });
+    if (bridge?.narrative?.trim()) texts.push(bridge.narrative.trim());
     toggles.push({
       mode,
       events: refine.events,
@@ -281,6 +285,7 @@ async function runPreset(preset: (typeof DEMO_PRESETS)[number]): Promise<Result>
     anchorSource: planB.llm?.anchorSource ?? "(none)",
     narrative: planB.llm?.narrative ?? "(none)",
     narration,
+    texts,
     failures,
   };
 }
@@ -314,6 +319,7 @@ async function main(): Promise<void> {
         anchorSource: "?",
         narrative: "?",
         narration: [],
+        texts: [],
         failures: [error instanceof Error ? error.message : String(error)],
       });
     }
@@ -353,7 +359,33 @@ async function main(): Promise<void> {
     console.log(`  ${row.preset}: ${row.narration.map((entry) => entry.source).join(",")} ${rowCodes.length ? `[${rowCodes.join(",")}]` : ""}`);
   }
 
-  const allFailures = results.flatMap((row) => row.failures);
+  const example = workedExampleText();
+  const copyFailures: string[] = [];
+  for (const row of results) {
+    for (const text of row.texts) {
+      if (sharesWordSequence(text, example)) {
+        copyFailures.push(`${row.preset}: narration shares a 6-word sequence with the worked example`);
+      }
+    }
+  }
+  for (let left = 0; left < results.length; left += 1) {
+    for (let right = left + 1; right < results.length; right += 1) {
+      const a = results[left]!;
+      const b = results[right]!;
+      for (const one of a.texts) {
+        for (const two of b.texts) {
+          if (one === two) copyFailures.push(`${a.preset} and ${b.preset}: identical narration`);
+          else if (wordOverlapRatio(one, two) > 0.6) {
+            copyFailures.push(`${a.preset} and ${b.preset}: narration word overlap above 60%`);
+          }
+        }
+      }
+    }
+  }
+  if (copyFailures.length === 0) console.log("Copy check: clean");
+  else for (const failure of copyFailures) console.log(`Copy check: ${failure}`);
+
+  const allFailures = results.flatMap((row) => row.failures).concat(copyFailures);
   const deepCutsEvidence = results.map((row) => `${row.preset}:${row.anchorSource}/${row.narrative}`);
   console.log(`\nCoverage: ${deepCutsEvidence.join(", ")}`);
   console.log(`Failures: ${allFailures.length}`);

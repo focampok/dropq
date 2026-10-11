@@ -259,7 +259,8 @@ export async function snapshotSessionPacks(sessionId: string): Promise<PackCache
 
 function stripCacheMarker(coverage: Prisma.JsonValue): Prisma.JsonValue {
   if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) return coverage;
-  const { cache: _cache, ...rest } = coverage as Record<string, unknown>;
+  const rest = { ...(coverage as Record<string, unknown>) };
+  delete rest.cache;
   return rest as Prisma.JsonValue;
 }
 

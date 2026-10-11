@@ -8,10 +8,12 @@ import {
   GeminiDeadlineError,
   geminiFailureCode,
   mergeTrace,
+  noteGeminiCall,
   readGeminiConfig,
   readTrace,
   type LlmCallTrace,
 } from "@/lib/llm/gemini-chain";
+import fixture from "@/lib/pack/fixture.json";
 import {
   anchorsForRule,
   anchorEvidence,
@@ -564,6 +566,63 @@ export async function composeNarratives(input: {
     return llm ?? templates.get(plan.label)!;
   });
   return { plans, provider: state.provider, offReason, failures, ms: Date.now() - started, trace };
+}
+
+export type NarrationProbe = {
+  model: string;
+  outcome: string;
+  latencyMs: number;
+  reasoningTokens: number | null;
+  valid: boolean;
+};
+
+/** One structured narration call for a single model. The fallback loop stays out of this. */
+export async function probeNarrationModel(modelId: string, thinking: boolean): Promise<NarrationProbe> {
+  const read = readGeminiConfig();
+  const plans: NarrativePlanInput[] = fixture.packs.map((pack) => ({
+    label: pack.label === "B" ? "B" : "A",
+    city: fixture.city,
+    anchors: fixture.seeds.map((seed) => ({ name: seed.raw })),
+    slots: Object.fromEntries(pack.items.map((item) => [item.slot, item.name])),
+  }));
+  if (!read.ok) return { model: modelId, outcome: read.off, latencyMs: 0, reasoningTokens: null, valid: false };
+  const started = Date.now();
+  try {
+    noteGeminiCall();
+    const google = createGoogleGenerativeAI({ apiKey: read.config.apiKey });
+    const result = await generateObject({
+      model: google(modelId),
+      system: systemFor("both"),
+      schema: narrativeSchema("both"),
+      prompt: narrativePrompt("en", plans, "both"),
+      temperature: TEMPERATURE,
+      maxRetries: 0,
+      ...(thinking
+        ? { providerOptions: { google: { thinkingConfig: { thinkingLevel: GEMINI_THINKING_LEVEL } } } }
+        : {}),
+    });
+    const valid = plans.every((plan) => {
+      const text = plan.label === "A" ? result.object.rootsNarrative : result.object.bridgeNarrative;
+      const headline = plan.label === "A" ? result.object.rootsHeadline : result.object.bridgeHeadline;
+      return (
+        validateNarrative(text ?? "", plan, "en", MAX_NARRATIVE_CHARS) === null &&
+        validateNarrative(headline ?? "", plan, "en", MAX_HEADLINE_CHARS, false) === null
+      );
+    });
+    return {
+      model: modelId,
+      outcome: "200",
+      latencyMs: Date.now() - started,
+      reasoningTokens: result.usage.reasoningTokens ?? null,
+      valid,
+    };
+  } catch (error) {
+    const status =
+      error && typeof error === "object" && "statusCode" in error && typeof (error as { statusCode?: unknown }).statusCode === "number"
+        ? String((error as { statusCode: number }).statusCode)
+        : (geminiFailureCode(error) ?? "request");
+    return { model: modelId, outcome: status, latencyMs: Date.now() - started, reasoningTokens: null, valid: false };
+  }
 }
 
 export async function narratePlan(input: {

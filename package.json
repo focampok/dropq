@@ -21,7 +21,8 @@
     "warm": "tsx scripts/warm-presets.ts",
     "verify:images": "tsx scripts/verify-images.ts",
     "verify:ui": "tsx scripts/verify-ui.ts",
-    "verify:local": "tsx scripts/verify-local.ts"
+    "verify:local": "tsx scripts/verify-local.ts",
+    "probe:llm": "tsx scripts/probe-llm.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "2.0.102",

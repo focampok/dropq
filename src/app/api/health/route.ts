@@ -3,6 +3,8 @@ import { prisma } from "@/lib/db";
 import { checkBootEnv } from "@/lib/env-check";
 import { qlooApiKey } from "@/lib/qloo/config";
 import { qlooQuota, search } from "@/lib/qloo/client";
+import { geminiCallCount } from "@/lib/llm/gemini-chain";
+import { observedQlooCalls } from "@/lib/qloo/client";
 import { llmConfigured } from "@/lib/pipeline/llm";
 import { QlooHttpError, QlooQuotaError } from "@/lib/qloo/types";
 import { enforceRateLimit } from "@/lib/rate-limit";
@@ -43,7 +45,17 @@ export async function GET(request: Request) {
     qlooStatus?: number;
     quota: { remaining?: number; blocked: boolean };
     llm: "on" | "off";
-  } = { ok, db, qloo, quota, llm: llmConfigured() ? "on" : "off" };
+    geminiCalls: number;
+    qlooCalls: number;
+  } = {
+    ok,
+    db,
+    qloo,
+    quota,
+    llm: llmConfigured() ? "on" : "off",
+    geminiCalls: geminiCallCount(),
+    qlooCalls: observedQlooCalls(),
+  };
   if (qloo === "down" && qlooStatus !== undefined) body.qlooStatus = qlooStatus;
 
   return NextResponse.json(body, {

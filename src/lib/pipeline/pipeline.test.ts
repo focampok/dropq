@@ -349,6 +349,14 @@ describe("bridge anchor rule B", () => {
     );
   });
 
+  it("keeps onboarding presets in Roots, Latin tour, then Fandom order", () => {
+    expect(DEMO_PRESETS.map((preset) => preset.id)).toEqual([
+      "roots-gt-la",
+      "latin-tour-houston",
+      "fandom-con-nyc",
+    ]);
+  });
+
   it("follows BRIDGE_ANCHOR_RULE", () => {
     const pool = [weakWatch, listen, wear];
     expect(anchorsForRule(pool, new Set())).toEqual(anchorsForRule(pool, new Set(), BRIDGE_ANCHOR_RULE));

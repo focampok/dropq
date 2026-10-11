@@ -19,7 +19,7 @@ import { STEP_IDS } from "../src/lib/i18n/types";
 
 const BASE = process.env.BASE_URL?.trim() || "http://localhost:3000";
 
-type Event = { step?: string; status?: string; detail?: string; packIds?: string[]; llmFallback?: string };
+type Event = { step?: string; status?: string; detail?: string; packIds?: string[]; llmFallback?: string; geminiCalls?: number };
 
 type Item = {
   slot: "watch" | "listen" | "wear" | "do";
@@ -34,7 +34,18 @@ type Plan = {
   label: "A" | "B";
   narrative: string | null;
   coverage: Record<string, unknown> | null;
-  llm: { anchors: string; anchorSource: string; narrative: string; headline: string; provider: string | null; offReason: string | null; failures: string[] } | null;
+  llm: {
+    anchors: string;
+    anchorSource: string;
+    narrative: string;
+    headline: string;
+    provider: string | null;
+    offReason: string | null;
+    failures: string[];
+    modelUsed?: { anchors: string | null; narrative: string | null };
+    attempts?: { anchors: number; narrative: number };
+    calls?: number;
+  } | null;
   items: Item[];
 };
 
@@ -133,6 +144,9 @@ type Result = {
   narrative: string;
   narration: { source: string; failures: string[] }[];
   texts: string[];
+  models: { kind: "anchors" | "narrative"; id: string }[];
+  attempts: number;
+  geminiCalls: number;
   failures: string[];
 };
 
@@ -217,6 +231,17 @@ async function runPreset(preset: (typeof DEMO_PRESETS)[number]): Promise<Result>
     { source: planB.llm?.narrative ?? "?", failures: planB.llm?.failures ?? [] },
   ];
   const texts = [planA.narrative, planB.narrative].flatMap((text) => (text?.trim() ? [text.trim()] : []));
+  const models: { kind: "anchors" | "narrative"; id: string }[] = [];
+  let attempts = 0;
+  const noteModels = (llm: Plan["llm"], kinds: ("anchors" | "narrative")[]) => {
+    if (!llm) return;
+    for (const kind of kinds) {
+      const id = llm.modelUsed?.[kind];
+      if (id) models.push({ kind, id });
+    }
+    attempts += (llm.attempts?.anchors ?? 0) + (llm.attempts?.narrative ?? 0);
+  };
+  noteModels(planB.llm, ["anchors", "narrative"]);
 
   const defaultBridge = planB.items.map((item) => item.entityId);
   const rootIdsBefore = planA.items.map((item) => item.entityId);
@@ -237,6 +262,7 @@ async function runPreset(preset: (typeof DEMO_PRESETS)[number]): Promise<Result>
       failures: bridge?.llm?.failures ?? [],
     });
     if (bridge?.narrative?.trim()) texts.push(bridge.narrative.trim());
+    noteModels(bridge?.llm ?? null, ["anchors", "narrative"]);
     toggles.push({
       mode,
       events: refine.events,
@@ -286,8 +312,18 @@ async function runPreset(preset: (typeof DEMO_PRESETS)[number]): Promise<Result>
     narrative: planB.llm?.narrative ?? "(none)",
     narration,
     texts,
+    models,
+    attempts,
+    geminiCalls: Math.max(pack.events.at(-1)?.geminiCalls ?? 0, ...toggles.map((toggle) => toggle.events.at(-1)?.geminiCalls ?? 0)),
     failures,
   };
+}
+
+function llmBudget(): number {
+  const index = process.argv.indexOf("--llm-budget");
+  if (index < 0 || !process.argv[index + 1]) return 80;
+  const value = Number(process.argv[index + 1]);
+  return Number.isFinite(value) && value > 0 ? value : 80;
 }
 
 async function main(): Promise<void> {
@@ -300,10 +336,22 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const budget = llmBudget();
   const results: Result[] = [];
+  let spent = 0;
   for (const preset of DEMO_PRESETS) {
+    if (spent >= budget) {
+      console.log(`Gemini budget ${budget} reached after ${spent} calls. Stopping.`);
+      break;
+    }
     try {
-      results.push(await runPreset(preset));
+      const result = await runPreset(preset);
+      spent = Math.max(spent, result.geminiCalls);
+      results.push(result);
+      if (spent > budget) {
+        console.log(`Gemini budget ${budget} exceeded (${spent} calls). Stopping.`);
+        break;
+      }
     } catch (error) {
       results.push({
         preset: preset.id,
@@ -320,6 +368,9 @@ async function main(): Promise<void> {
         narrative: "?",
         narration: [],
         texts: [],
+        models: [],
+        attempts: 0,
+        geminiCalls: 0,
         failures: [error instanceof Error ? error.message : String(error)],
       });
     }
@@ -351,9 +402,26 @@ async function main(): Promise<void> {
   const fellBack = narrations.filter((entry) => entry.source === "template");
   const codes = [...new Set(fellBack.flatMap((entry) => entry.failures))];
   const rate = narrations.length === 0 ? 0 : Math.round((fellBack.length / narrations.length) * 1000) / 10;
+  const tally = new Map<string, number>();
+  for (const entry of narrations) {
+    for (const code of entry.failures) tally.set(code, (tally.get(code) ?? 0) + 1);
+  }
+  const modelCounts = new Map<string, number>();
+  for (const row of results) {
+    for (const model of row.models) {
+      const key = `${model.kind} ${model.id}`;
+      modelCounts.set(key, (modelCounts.get(key) ?? 0) + 1);
+    }
+  }
   console.log(
     `Narrations: ${narrations.length}; fell back to the template: ${fellBack.length} (${rate}%); codes: ${codes.join(", ") || "none"}`,
   );
+  console.log(
+    `failures by code: ${[...tally.entries()].map(([code, count]) => `${code}=${count}`).join(", ") || "none"}`,
+  );
+  console.log(`modelUsed: ${[...modelCounts.entries()].map(([key, count]) => `${key}=${count}`).join(", ") || "none"}`);
+  console.log(`attempts: ${results.reduce((sum, row) => sum + row.attempts, 0)}`);
+  console.log(`gemini calls reported: ${spent} (budget ${budget})`);
   for (const row of results) {
     const rowCodes = [...new Set(row.narration.flatMap((entry) => entry.failures))];
     console.log(`  ${row.preset}: ${row.narration.map((entry) => entry.source).join(",")} ${rowCodes.length ? `[${rowCodes.join(",")}]` : ""}`);

@@ -25,6 +25,7 @@ import {
   type NarrativePlanInput,
   type PlanNarrative,
 } from "@/lib/pipeline/llm";
+import { geminiCallCount } from "@/lib/llm/gemini-chain";
 import { llmStatus, type LlmProviderId } from "@/lib/llm/provider";
 import { fillPlaceSlot, placeFallbackNote, placeOmittedNote, type PlaceStages } from "@/lib/pipeline/place";
 import {
@@ -49,6 +50,7 @@ export type Progress = {
   packIds?: string[];
   llmMs?: number;
   llmFallback?: string;
+  geminiCalls?: number;
 };
 
 type ResolvedAnchor = {
@@ -261,7 +263,7 @@ export async function runPipeline(
       notes,
       locale,
     );
-    emit({ step: "done", status: "done", packIds });
+    emit({ step: "done", status: "done", packIds, geminiCalls: geminiCallCount() });
     return { packIds };
   }
 
@@ -394,6 +396,7 @@ export async function runPipeline(
     status: "done",
     packIds,
     llmMs,
+    geminiCalls: geminiCallCount(),
     ...(llmFailures.length > 0 ? { llmFallback: llmFailures.join(",") } : {}),
   });
   return { packIds };
@@ -1093,7 +1096,7 @@ async function persistMock(sessionId: string, emit: (event: Progress) => void): 
     }
     return created;
   });
-  emit({ step: "done", status: "done", packIds: ids });
+  emit({ step: "done", status: "done", packIds: ids, geminiCalls: geminiCallCount() });
   return { packIds: ids };
 }
 
@@ -1198,6 +1201,7 @@ export async function refineBridge(
       status: "done",
       packIds: [root.id, bridgeRow.id],
       llmMs: narration.ms,
+      geminiCalls: geminiCallCount(),
       ...(failures.length > 0 ? { llmFallback: failures.join(",") } : {}),
     });
     return { packIds: [root.id, bridgeRow.id] };
@@ -1327,6 +1331,7 @@ export async function refineBridge(
     status: "done",
     packIds: [root.id, bridgeRow.id],
     llmMs: anchorChoice.ms + narration.ms,
+    geminiCalls: geminiCallCount(),
     ...(llmFailures.length > 0 ? { llmFallback: llmFailures.join(",") } : {}),
   });
   return { packIds: [root.id, bridgeRow.id] };

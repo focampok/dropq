@@ -1,6 +1,17 @@
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { getDictionary, type Locale } from "@/lib/i18n";
+import {
+  GEMINI_THINKING_LEVEL,
+  GeminiChain,
+  GeminiDeadlineError,
+  geminiFailureCode,
+  mergeTrace,
+  readGeminiConfig,
+  readTrace,
+  type LlmCallTrace,
+} from "@/lib/llm/gemini-chain";
 import {
   anchorsForRule,
   anchorEvidence,
@@ -66,6 +77,8 @@ export const NARRATIVE_TOKENS = [
 
 export type NarrativeToken = (typeof NARRATIVE_TOKENS)[number];
 
+export type { LlmCallTrace };
+
 export type LlmFailure =
   | "invalid_json"
   | "unknown_id"
@@ -79,7 +92,13 @@ export type LlmFailure =
   | "url"
   | "wrong_language"
   | "no_token"
-  | "empty";
+  | "empty"
+  | "rate_limited"
+  | "model_unavailable"
+  | "auth"
+  | "server_error"
+  | "network"
+  | "deadline";
 
 export type AnchorSource = "llm" | "rule_b_fallback";
 
@@ -91,6 +110,7 @@ export type AnchorChoice = {
   reason?: string;
   failure?: LlmFailure;
   ms: number;
+  trace?: LlmCallTrace | null;
 };
 
 export type NarrativePlanInput = {
@@ -113,6 +133,7 @@ export type NarrativesChoice = {
   offReason: string | null;
   failures: LlmFailure[];
   ms: number;
+  trace?: LlmCallTrace | null;
 };
 
 export function llmConfigured(): boolean {
@@ -145,7 +166,10 @@ function withTimeout<T>(ms: number, work: (signal: AbortSignal) => Promise<T>): 
 }
 
 function failureClass(error: unknown): LlmFailure {
+  if (error instanceof GeminiDeadlineError) return "deadline";
   if (error instanceof Error && error.message === TIMEOUT_CODE) return "timeout";
+  const gemini = geminiFailureCode(error);
+  if (gemini) return gemini;
   if (error instanceof z.ZodError || error instanceof SyntaxError) return "invalid_json";
   // The SDK reports "the model did not answer with a parsable object" as its own
   // error class, which is a schema problem, not a transport one.
@@ -154,15 +178,45 @@ function failureClass(error: unknown): LlmFailure {
   return "request";
 }
 
+let googleChain: GeminiChain | null = null;
+
+function googleTransport(): GeminiChain | null {
+  const read = readGeminiConfig();
+  if (!read.ok) return null;
+  if (!googleChain) googleChain = new GeminiChain(read.config);
+  return googleChain;
+}
+
 /** Every validated call goes through generateObject; nothing free-text is parsed later. */
 async function readStructured<T>(
   prompt: string,
   schema: z.ZodType<T>,
   timeoutMs: number,
   options: { maxOutputTokens?: number; system?: string } = {},
-): Promise<T> {
+): Promise<{ object: T; trace: LlmCallTrace | null }> {
   const state = llmModelState();
   if (!state.configured) throw new Error("llm_not_configured");
+  if (state.provider === "google") {
+    const chain = googleTransport();
+    if (!chain) throw new Error("llm_not_configured");
+    const outcome = await chain.generate(timeoutMs, ({ modelId, abortSignal, thinking }) => {
+      const google = createGoogleGenerativeAI({ apiKey: chain.config.apiKey });
+      return generateObject({
+        model: google(modelId),
+        system: options.system ?? systemFor("both"),
+        schema,
+        prompt,
+        temperature: TEMPERATURE,
+        maxRetries: MAX_RETRIES,
+        abortSignal,
+        ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
+        ...(thinking
+          ? { providerOptions: { google: { thinkingConfig: { thinkingLevel: GEMINI_THINKING_LEVEL } } } }
+          : {}),
+      });
+    });
+    return { object: outcome.value.object, trace: outcome.trace };
+  }
   const result = await withTimeout(timeoutMs, (abortSignal) =>
     generateObject({
       model: state.model,
@@ -175,7 +229,7 @@ async function readStructured<T>(
       abortSignal,
     }),
   );
-  return result.object;
+  return { object: result.object, trace: null };
 }
 
 const anchorSchema = z.object({
@@ -237,9 +291,10 @@ export async function chooseBridgeAnchors(
   if (!llmConfigured() || closed.length < 2) return fallback();
   const started = Date.now();
   try {
-    const object = await readStructured(anchorPrompt(closed), anchorSchema, ANCHOR_TIMEOUT_MS, {
+    const structured = await readStructured(anchorPrompt(closed), anchorSchema, ANCHOR_TIMEOUT_MS, {
       system: ANCHOR_SYSTEM,
     });
+    const object = structured.object;
     const ids = object.anchorIds;
     const valid =
       ids.length >= 2 &&
@@ -252,6 +307,7 @@ export async function chooseBridgeAnchors(
         failure: anchorFailure(closed, ids),
         reason: object.reason || undefined,
         ms: Date.now() - started,
+        trace: structured.trace,
       };
     }
     return {
@@ -261,9 +317,10 @@ export async function chooseBridgeAnchors(
       evidence: anchorEvidence(candidates, ids, seedTags),
       reason: object.reason || undefined,
       ms: Date.now() - started,
+      trace: structured.trace,
     };
   } catch (error) {
-    return { ...fallback(), failure: failureClass(error), ms: Date.now() - started };
+    return { ...fallback(), failure: failureClass(error), trace: readTrace(error), ms: Date.now() - started };
   }
 }
 
@@ -451,14 +508,17 @@ export async function composeNarratives(input: {
   }
   const started = Date.now();
   const fields = scope === "bridge" ? (["bridge"] as const) : (["roots", "bridge"] as const);
+  let trace: LlmCallTrace | null = null;
 
   const attempt = async (repair?: LlmFailure): Promise<Map<string, PlanNarrative> | LlmFailure> => {
-    const object = await readStructured<NarrativeObject>(
+    const structured = await readStructured<NarrativeObject>(
       narrativePrompt(input.locale, input.plans, scope, repair),
       narrativeSchema(scope),
       LLM_TIMEOUT_MS,
       { maxOutputTokens: NARRATIVE_MAX_TOKENS, system: systemFor(scope) },
     );
+    trace = mergeTrace(trace, structured.trace);
+    const object = structured.object;
     const out = new Map<string, PlanNarrative>();
     for (const side of fields) {
       const label = (side === "roots" ? "A" : "B") as "A" | "B";
@@ -488,11 +548,13 @@ export async function composeNarratives(input: {
       try {
         result = await attempt(result);
       } catch (error) {
+        trace = mergeTrace(trace, readTrace(error));
         result = failureClass(error);
       }
       if (typeof result === "string") failures.push(result);
     }
   } catch (error) {
+    trace = mergeTrace(trace, readTrace(error));
     result = failureClass(error);
     failures.push(result);
   }
@@ -501,7 +563,7 @@ export async function composeNarratives(input: {
     const llm = typeof result === "string" ? undefined : result.get(plan.label);
     return llm ?? templates.get(plan.label)!;
   });
-  return { plans, provider: state.provider, offReason, failures, ms: Date.now() - started };
+  return { plans, provider: state.provider, offReason, failures, ms: Date.now() - started, trace };
 }
 
 export async function narratePlan(input: {

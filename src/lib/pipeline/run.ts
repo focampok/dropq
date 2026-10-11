@@ -20,6 +20,7 @@ import {
   templateNarrative,
   type AnchorChoice,
   type AnchorSource,
+  type LlmCallTrace,
   type LlmFailure,
   type NarrativePlanInput,
   type PlanNarrative,
@@ -62,11 +63,17 @@ type ResolvedAnchor = {
 /** Everything the pack tells the UI about how the LLM was used, per plan. */
 type LlmCoverage = {
   provider: LlmProviderId | null;
+  off: string | null;
   offReason: string | null;
   anchors: "llm" | "fallback";
   anchorSource: AnchorSource;
   narrative: "llm" | "template";
   headline: string;
+  modelUsed: { anchors: string | null; narrative: string | null };
+  attempts: { anchors: number; narrative: number };
+  chainTried: { anchors: string[]; narrative: string[] };
+  latencyMs: { anchors: number; narrative: number };
+  calls: number;
   failures: LlmFailure[];
 };
 
@@ -82,14 +89,24 @@ function llmCoverage(input: {
   anchorSource: AnchorSource;
   narrative: PlanNarrative;
   failures: LlmFailure[];
+  anchorTrace?: LlmCallTrace | null;
+  narrativeTrace?: LlmCallTrace | null;
 }): LlmCoverage {
+  const anchors = input.anchorTrace;
+  const narrative = input.narrativeTrace;
   return {
     provider: input.provider,
+    off: input.offReason,
     offReason: input.offReason,
     anchors: input.anchors,
     anchorSource: input.anchorSource,
     narrative: input.narrative.source,
     headline: input.narrative.headline,
+    modelUsed: { anchors: anchors?.modelUsed ?? null, narrative: narrative?.modelUsed ?? null },
+    attempts: { anchors: anchors?.attempts ?? 0, narrative: narrative?.attempts ?? 0 },
+    chainTried: { anchors: anchors?.chainTried ?? [], narrative: narrative?.chainTried ?? [] },
+    latencyMs: { anchors: anchors?.latencyMs ?? 0, narrative: narrative?.latencyMs ?? 0 },
+    calls: (anchors?.calls ?? 0) + (narrative?.calls ?? 0),
     failures: input.failures,
   };
 }
@@ -337,6 +354,7 @@ export async function runPipeline(
       anchorSource: anchorChoice.anchorSource,
       failures: llmFailures,
       ruleB,
+      anchorTrace: anchorChoice.trace,
       narratives: { A: templates.get("A")!, B: templates.get("B")! },
     },
     assembled.coverage.notes,
@@ -347,7 +365,7 @@ export async function runPipeline(
 
   emit({ step: "narrate", status: "active" });
   const narration = signal?.aborted
-    ? { plans: [...templates.values()], failures: [] as LlmFailure[], ms: 0 }
+    ? { plans: [...templates.values()], failures: [] as LlmFailure[], ms: 0, trace: null }
     : await composeNarratives({ locale, plans: planInputs });
   llmMs += narration.ms;
   llmFailures.push(...narration.failures);
@@ -361,6 +379,8 @@ export async function runPipeline(
       anchorSource: anchorChoice.anchorSource,
       failures: llmFailures,
       ruleB,
+      anchorTrace: anchorChoice.trace,
+      narrativeTrace: narration.trace,
     });
   }
   emit({
@@ -696,6 +716,8 @@ type PlanCoverageExtras = {
   failures: LlmFailure[];
   ruleB?: RuleBCoverage;
   narratives: Partial<Record<"A" | "B", PlanNarrative>>;
+  anchorTrace?: LlmCallTrace | null;
+  narrativeTrace?: LlmCallTrace | null;
 };
 
 type BridgeItem = {
@@ -826,6 +848,8 @@ function coverageFor(
       anchorSource: extras.anchorSource,
       narrative: narrative ?? { label, text: "", headline: "", source: "template" },
       failures: extras.failures,
+      anchorTrace: extras.anchorTrace,
+      narrativeTrace: extras.narrativeTrace,
     });
   }
   if (label !== "B") return base;
@@ -871,6 +895,8 @@ function coverageWithSnapshots(
       anchorSource: extras.anchorSource,
       narrative,
       failures: extras.failures,
+      anchorTrace: extras.anchorTrace,
+      narrativeTrace: extras.narrativeTrace,
     });
   } else if (previous.llm) {
     next.llm = previous.llm;
@@ -1154,6 +1180,7 @@ export async function refineBridge(
         coverageWithSnapshots(previous, assembled.coverage, mode, null, {
           ...extras,
           failures,
+          narrativeTrace: narration.trace,
           narratives: { B: produced },
         }),
         replacement.items,
@@ -1258,6 +1285,7 @@ export async function refineBridge(
     anchorSource: anchorChoice.anchorSource,
     failures: llmFailures,
     ruleB: { ...(anchorChoice.reason ? { reason: anchorChoice.reason } : {}), anchors: anchorChoice.evidence },
+    anchorTrace: anchorChoice.trace,
     narratives: { B: templateFor(plan, locale) },
   };
   // Persist the template first so the Bridge is never blocked on the LLM.
@@ -1278,8 +1306,10 @@ export async function refineBridge(
     await writeBridge(
       bridgeRow.id,
       produced.text,
-      coverageWithSnapshots(previous, assembled.coverage, mode, serializeBridgeItems(replacement.items, locale), {
+        coverageWithSnapshots(previous, assembled.coverage, mode, serializeBridgeItems(replacement.items, locale), {
         ...extras,
+        failures: llmFailures,
+        narrativeTrace: narration.trace,
         narratives: { B: produced },
       }),
       replacement.items,

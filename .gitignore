@@ -26,10 +26,12 @@ coverage/
 /dropq-alcance*.md
 /prompt_*.md
 /gates-*.md
+/guia-*.md
 
 # generated evidence from the Qloo probes (raw API payloads and reports)
 /docs/gates/
 /docs/gates*.md
 /docs/internal/
 /docs/pass3d-share.md
+/docs/pass3e-share.md
 /docs/screenshots/

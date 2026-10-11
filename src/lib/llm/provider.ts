@@ -1,6 +1,7 @@
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
+import { readGeminiConfig } from "@/lib/llm/gemini-chain";
 
 export type LlmProviderId = "nebius" | "google";
 
@@ -34,7 +35,8 @@ function missingNames(provider: LlmProviderId, env: LlmEnv): string[] {
 
 /**
  * The AI SDK model for the configured provider, or a reason why the LLM is off.
- * Google has no default `LLM_MODEL`: without it the provider is off on purpose.
+ * Google has no default model id: the principal is `GEMINI_MODEL` or, if that is
+ * empty, `LLM_MODEL`. No key is `no_key`. No principal is `no_model`.
  */
 export function llmModelState(env: LlmEnv = process.env): LlmModelState {
   const declared = env.LLM_PROVIDER?.trim().toLowerCase();
@@ -43,13 +45,15 @@ export function llmModelState(env: LlmEnv = process.env): LlmModelState {
     if (declared) return { configured: false, reason: `unknown_provider:${declared}` };
     return { configured: false, reason: `missing:${REQUIRED.nebius.join(",")}` };
   }
-  const missing = missingNames(provider, env);
-  if (missing.length > 0) return { configured: false, reason: `missing:${missing.join(",")}` };
   if (provider === "google") {
-    const modelId = env.LLM_MODEL!.trim();
-    const google = createGoogleGenerativeAI({ apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY });
+    const gemini = readGeminiConfig(env);
+    if (!gemini.ok) return { configured: false, reason: gemini.off };
+    const modelId = gemini.config.models[0]!;
+    const google = createGoogleGenerativeAI({ apiKey: gemini.config.apiKey });
     return { configured: true, provider, modelId, model: google(modelId) };
   }
+  const missing = missingNames(provider, env);
+  if (missing.length > 0) return { configured: false, reason: `missing:${missing.join(",")}` };
   const modelId = env.NEBIUS_MODEL!.trim();
   const nebius = createOpenAI({
     apiKey: env.NEBIUS_API_KEY,

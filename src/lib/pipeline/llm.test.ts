@@ -64,24 +64,31 @@ describe("llm provider selection", () => {
     expect(state.configured && state.provider).toBe("nebius");
   });
 
-  it("selects google from LLM_PROVIDER", () => {
+  it("selects google from LLM_PROVIDER and uses LLM_MODEL only as the principal fallback", () => {
     const state = llmModelState({
       LLM_PROVIDER: "google",
       GOOGLE_GENERATIVE_AI_API_KEY: "test",
-      LLM_MODEL: "gemini-2.5-flash",
+      LLM_MODEL: "configured-model",
     });
     expect(state.configured).toBe(true);
     expect(state.configured && state.provider).toBe("google");
-    expect(state.configured && state.modelId).toBe("gemini-2.5-flash");
+    expect(state.configured && state.modelId).toBe("configured-model");
   });
 
-  it("turns the LLM off when google has no LLM_MODEL", () => {
+  it("turns the LLM off when google has no model id", () => {
     const state = llmModelState({
       LLM_PROVIDER: "google",
       GOOGLE_GENERATIVE_AI_API_KEY: "test",
     });
-    expect(state).toEqual({ configured: false, reason: "missing:LLM_MODEL" });
-    expect(llmStatus({ LLM_PROVIDER: "google" }).offReason).toContain("LLM_MODEL");
+    expect(state).toEqual({ configured: false, reason: "no_model" });
+    expect(llmStatus({ LLM_PROVIDER: "google", GOOGLE_GENERATIVE_AI_API_KEY: "test" }).offReason).toBe("no_model");
+  });
+
+  it("turns google off before any call when the key is missing", () => {
+    expect(llmModelState({ LLM_PROVIDER: "google", GEMINI_MODEL: "configured-model" })).toEqual({
+      configured: false,
+      reason: "no_key",
+    });
   });
 
   it("turns the LLM off when every variable is missing", () => {
@@ -312,5 +319,69 @@ describe("llm fallbacks", () => {
     expect(choice.failure).toBe("timeout");
     expect(choice.ids).toEqual(anchorsForRule(candidates));
     packStillAssembles(choice.ids);
+  });
+
+  it("does not call Gemini when the key is missing", async () => {
+    vi.stubEnv("LLM_PROVIDER", "google");
+    vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "");
+    vi.stubEnv("GEMINI_API_KEY", "");
+    vi.stubEnv("GEMINI_MODEL", "configured-model");
+    vi.stubEnv("NEBIUS_API_KEY", "");
+    vi.stubEnv("NEBIUS_BASE_URL", "");
+    vi.stubEnv("NEBIUS_MODEL", "");
+    const generateObject = vi.fn();
+    vi.doMock("ai", () => ({ generateObject }));
+    const { chooseBridgeAnchors } = await loadLlm();
+    const choice = await chooseBridgeAnchors(candidates);
+    expect(generateObject).not.toHaveBeenCalled();
+    expect(choice.source).toBe("fallback");
+    expect(choice.failure).toBeUndefined();
+  });
+
+  it("falls back both callers when the Gemini loop throws, and records the last error code", async () => {
+    vi.stubEnv("LLM_PROVIDER", "google");
+    vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test");
+    vi.stubEnv("GEMINI_MODEL", "configured-model");
+    vi.stubEnv("GEMINI_FALLBACK_MODELS", "");
+    vi.stubEnv("NEBIUS_API_KEY", "");
+    vi.stubEnv("NEBIUS_BASE_URL", "");
+    vi.stubEnv("NEBIUS_MODEL", "");
+    vi.doMock("ai", () => ({
+      generateObject: vi.fn(async () => {
+        throw Object.assign(new Error("missing model"), { statusCode: 404 });
+      }),
+    }));
+    const { chooseBridgeAnchors, composeNarratives } = await loadLlm();
+    const anchors = await chooseBridgeAnchors(candidates);
+    expect(anchors).toMatchObject({ source: "fallback", failure: "model_unavailable", anchorSource: "rule_b_fallback" });
+    expect(anchors.trace?.chainTried).toEqual(["configured-model"]);
+    const narratives = await composeNarratives({
+      locale: "en",
+      plans: [{ label: "A", city: "Houston", anchors: [], slots: { listen: "Karol G" } }],
+    });
+    expect(narratives.failures).toContain("model_unavailable");
+    expect(narratives.plans[0]).toMatchObject({ source: "template" });
+    expect(narratives.trace?.chainTried).toEqual(["configured-model"]);
+  });
+
+  it("passes maxRetries 0 and the minimal thinking level on a Google call", async () => {
+    vi.stubEnv("LLM_PROVIDER", "google");
+    vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test");
+    vi.stubEnv("GEMINI_MODEL", "configured-model");
+    vi.stubEnv("GEMINI_FALLBACK_MODELS", "");
+    vi.stubEnv("NEBIUS_API_KEY", "");
+    vi.stubEnv("NEBIUS_BASE_URL", "");
+    vi.stubEnv("NEBIUS_MODEL", "");
+    const generateObject = vi.fn(async () => ({ object: { anchorIds: ["listen-1", "wear-1"], reason: "ok" } }));
+    vi.doMock("ai", () => ({ generateObject }));
+    const { chooseBridgeAnchors } = await loadLlm();
+    const choice = await chooseBridgeAnchors(candidates, new Set(["pop", "cloth"]));
+    expect(choice.source).toBe("llm");
+    expect(generateObject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        maxRetries: 0,
+        providerOptions: { google: { thinkingConfig: { thinkingLevel: "minimal" } } },
+      }),
+    );
   });
 });

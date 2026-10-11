@@ -35,6 +35,8 @@ export type Dictionary = {
     saving: string;
     saveError: string;
     needAnchors: string;
+    rateLimited: string;
+    demoResting: string;
   };
   cities: Record<CityId, string>;
   eventKinds: Record<EventKind, string>;
@@ -58,6 +60,9 @@ export type Dictionary = {
     stepSkipped: string;
     coverage: string;
     quotaLow: string;
+    rateLimited: string;
+    demoResting: string;
+    cachedNote: string;
     timeout: string;
     noAnchors: string;
     resolvedAs: string;

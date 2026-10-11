@@ -5,6 +5,8 @@
  * not have: a wall-clock deadline, because the anchor call sits before first paint.
  */
 
+import { noteLlmHourlyCall } from "@/lib/rate-limit";
+
 export const TRANSIENT_HTTP_STATUS = new Set([429, 500, 502, 503, 504]);
 
 const TRANSIENT_MESSAGE =
@@ -103,6 +105,8 @@ export function noteGeminiCall(): void {
   const cap = Number.isFinite(budget) && budget > 0 ? budget : Infinity;
   if (geminiCalls + 1 > cap) throw new GeminiBudgetError();
   geminiCalls += 1;
+  // Soft hourly cap is enforced before callers enter the LLM; this only records.
+  noteLlmHourlyCall();
 }
 
 /** The installed `ai` package names this class `AI_APICallError` and puts the HTTP status on `statusCode`. */

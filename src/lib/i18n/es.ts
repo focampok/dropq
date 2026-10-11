@@ -24,6 +24,8 @@ export const es = {
     saving: "Guardando…",
     saveError: "No se pudo guardar la sesión. Inténtalo de nuevo.",
     needAnchors: "Añade de 3 a 5 anclas.",
+    rateLimited: "Vas un poco rápido. Espera un momento e inténtalo de nuevo.",
+    demoResting: "La demo en vivo está descansando; prueba un preset.",
   },
   cities: {
     "los-angeles": "Los Ángeles",
@@ -66,6 +68,9 @@ export const es = {
     stepSkipped: "Omitido",
     coverage: "Cobertura",
     quotaLow: "Los datos en vivo están limitados por ahora; prueba un preset.",
+    rateLimited: "Vas un poco rápido. Espera un momento e inténtalo de nuevo.",
+    demoResting: "La demo en vivo está descansando; prueba un preset.",
+    cachedNote: "Preparado con datos en vivo de Qloo · {when}",
     timeout: "El pack agotó el tiempo. Se muestra lo que alcanzó.",
     noAnchors: "Ninguna ancla se resolvió.",
     resolvedAs: "resuelta como",

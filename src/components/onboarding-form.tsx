@@ -59,6 +59,10 @@ export function OnboardingForm({ locale }: { locale: Locale }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ city, eventKind, locale }),
       });
+      if (sessionResponse.status === 429) {
+        setError(dictionary.onboarding.rateLimited);
+        return;
+      }
       if (!sessionResponse.ok) {
         setError(dictionary.onboarding.saveError);
         return;
@@ -76,6 +80,10 @@ export function OnboardingForm({ locale }: { locale: Locale }) {
           seeds: texts.map((rawText) => ({ rawText, source })),
         }),
       });
+      if (seedsResponse.status === 429) {
+        setError(dictionary.onboarding.rateLimited);
+        return;
+      }
       if (!seedsResponse.ok) {
         setError(dictionary.onboarding.saveError);
         return;

@@ -23,6 +23,8 @@ export const en = {
     saving: "Saving…",
     saveError: "Could not save the session. Try again.",
     needAnchors: "Add 3 to 5 anchors.",
+    rateLimited: "You are going a bit fast. Wait a moment and try again.",
+    demoResting: "The live demo is resting — try a preset pack instead.",
   },
   cities: {
     "los-angeles": "Los Angeles",
@@ -65,6 +67,9 @@ export const en = {
     stepSkipped: "Skipped",
     coverage: "Coverage",
     quotaLow: "Live data is temporarily limited; try a preset.",
+    rateLimited: "You are going a bit fast. Wait a moment and try again.",
+    demoResting: "The live demo is resting — try a preset pack instead.",
+    cachedNote: "Prepared from live Qloo data · {when}",
     timeout: "The pack timed out. What was ready is shown.",
     noAnchors: "No anchors resolved.",
     resolvedAs: "resolved as",

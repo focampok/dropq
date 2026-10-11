@@ -2,6 +2,7 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
 import { readGeminiConfig } from "@/lib/llm/gemini-chain";
+import { llmHourlyAllowed } from "@/lib/rate-limit";
 
 export type LlmProviderId = "nebius" | "google";
 
@@ -77,7 +78,8 @@ export function llmStatus(env: LlmEnv = process.env): {
   offReason: string | null;
 } {
   const state = llmModelState(env);
-  return state.configured
-    ? { provider: state.provider, offReason: null }
-    : { provider: null, offReason: state.reason };
+  if (!state.configured) return { provider: null, offReason: state.reason };
+  // Soft hourly cap: pack still runs with rule B + template narration.
+  if (!llmHourlyAllowed()) return { provider: state.provider, offReason: "hourly_cap" };
+  return { provider: state.provider, offReason: null };
 }

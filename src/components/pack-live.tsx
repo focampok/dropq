@@ -96,8 +96,13 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
     async function run(signal: AbortSignal) {
       try {
         const response = await fetch(`/api/session/${sessionId}/pack`, { method: "POST", signal });
+        if (response.status === 429) {
+          setError(dictionary.pack.rateLimited);
+          return;
+        }
         if (response.status === 503) {
-          setError(dictionary.pack.quotaLow);
+          const body = (await response.json().catch(() => null)) as { error?: string } | null;
+          setError(body?.error === "DEMO_RESTING" ? dictionary.pack.demoResting : dictionary.pack.quotaLow);
           return;
         }
         if (!response.ok || !response.body) {
@@ -154,6 +159,10 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode }),
       });
+      if (response.status === 429) {
+        setError(dictionary.pack.rateLimited);
+        return;
+      }
       if (response.status === 503) {
         setError(dictionary.pack.quotaLow);
         return;

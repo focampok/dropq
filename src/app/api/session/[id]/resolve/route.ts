@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { jsonError } from "@/lib/http";
+import { jsonError, readJsonBody, safeServerError } from "@/lib/http";
 import { QlooQuotaError } from "@/lib/qloo/types";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { requireSession } from "@/lib/session/require";
+import { packInputSchema } from "@/lib/session/schema";
 import { resolveOnly } from "@/lib/pipeline/run";
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -14,9 +15,16 @@ export async function POST(request: Request, context: RouteContext) {
   const { id } = await context.params;
   const gate = await requireSession(request, id);
   if (gate instanceof NextResponse) return gate;
-  const session = await prisma.session.findUnique({ where: { id } });
-  if (!session) return jsonError("not_found", 404);
+
   try {
+    const body = await readJsonBody(request);
+    if (!body.ok) return body.response;
+    if (body.value !== null) {
+      const parsed = packInputSchema.safeParse(body.value);
+      if (!parsed.success) return jsonError("invalid_body", 400);
+    }
+    const session = await prisma.session.findUnique({ where: { id } });
+    if (!session) return jsonError("not_found", 404);
     const anchors = await resolveOnly(id);
     return NextResponse.json({ anchors });
   } catch (error) {
@@ -30,6 +38,6 @@ export async function POST(request: Request, context: RouteContext) {
         { status: 503 },
       );
     }
-    return jsonError("failed", 500);
+    return safeServerError(error, "resolve_failed");
   }
 }

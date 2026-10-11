@@ -27,11 +27,8 @@ coverage/
 /prompt_*.md
 /gates-*.md
 /guia-*.md
+/audit-*
 
-# generated evidence from the Qloo probes (raw API payloads and reports)
-/docs/gates/
-/docs/gates*.md
-/docs/internal/
-/docs/pass3d-share.md
-/docs/pass3e-share.md
-/docs/screenshots/
+# generated evidence and pass reports (kept locally, not versioned)
+/docs/*
+!/docs/SUBMISSION.md

@@ -336,7 +336,7 @@ async function runPreset(preset: (typeof DEMO_PRESETS)[number]): Promise<Result>
   // (session copy changes; verified by the refine toggles above on the first session).
 
   const llm = planB.llm;
-  const health = await jar.json<{ quota: { remaining?: number; blocked: boolean }; llm: string }>("/api/health");
+  const llmOn = llm?.provider ? "on" : llm?.offReason ? "off" : "?";
 
   return {
     preset: name,
@@ -348,7 +348,7 @@ async function runPreset(preset: (typeof DEMO_PRESETS)[number]): Promise<Result>
     stepsOk,
     firstPaintMs: pack.paintMs,
     streamMs: pack.ms,
-    llm: `${health.body?.llm ?? "?"}/${llm?.narrative ?? "?"}${llm?.provider ? `:${llm.provider}` : ""}`,
+    llm: `${llmOn}/${llm?.narrative ?? "?"}${llm?.provider ? `:${llm.provider}` : ""}`,
     anchorSource: planB.llm?.anchorSource ?? "(none)",
     narrative: planB.llm?.narrative ?? "(none)",
     narration,
@@ -442,8 +442,7 @@ async function main(): Promise<void> {
   );
   console.log(`Stream-end median (includes narration): ${medians(results.map((row) => row.streamMs))} ms`);
 
-  const health = await fetch(`${BASE}/api/health`).then((response) => response.json()).catch(() => null);
-  console.log(`Qloo quota remaining from the last response headers: ${JSON.stringify(health?.quota ?? "unknown")}`);
+  console.log("Qloo quota: see pack coverage / process counters (health no longer exposes quota).");
 
   const narrations = results.flatMap((row) => row.narration);
   const fellBack = narrations.filter((entry) => entry.source === "template");

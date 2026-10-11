@@ -699,6 +699,12 @@ type BridgeSnapshotItem = {
   provenance: "qloo" | "mock";
 };
 
+type StoredModeNarrative = {
+  text: string;
+  headline: string;
+  source: "llm" | "template";
+};
+
 type PlanCoverage = {
   notes?: { en?: string; es?: string };
   removedFromBridge?: string[];
@@ -706,6 +712,8 @@ type PlanCoverage = {
   bridgeMode?: BridgeMode;
   defaultBridge?: unknown;
   deepBridge?: unknown;
+  defaultNarrative?: StoredModeNarrative;
+  deepNarrative?: StoredModeNarrative;
   ruleB?: unknown;
   llm?: unknown;
 };
@@ -856,10 +864,18 @@ function coverageFor(
     });
   }
   if (label !== "B") return base;
+  const defaultNarrative = extras?.narratives.B
+    ? {
+        text: extras.narratives.B.text,
+        headline: extras.narratives.B.headline,
+        source: extras.narratives.B.source,
+      }
+    : undefined;
   return {
     ...base,
     bridgeMode: "default",
     defaultBridge: serializeBridgeItems(items, locale),
+    ...(defaultNarrative ? { defaultNarrative } : {}),
     ...(extras?.ruleB ? { ruleB: extras.ruleB } : {}),
   };
 }
@@ -889,6 +905,8 @@ function coverageWithSnapshots(
   };
   if (previous.defaultBridge) next.defaultBridge = previous.defaultBridge;
   if (previous.deepBridge) next.deepBridge = previous.deepBridge;
+  if (previous.defaultNarrative) next.defaultNarrative = previous.defaultNarrative;
+  if (previous.deepNarrative) next.deepNarrative = previous.deepNarrative;
   const narrative = extras?.narratives.B;
   if (extras && narrative) {
     next.llm = llmCoverage({
@@ -901,6 +919,13 @@ function coverageWithSnapshots(
       anchorTrace: extras.anchorTrace,
       narrativeTrace: extras.narrativeTrace,
     });
+    const stored: StoredModeNarrative = {
+      text: narrative.text,
+      headline: narrative.headline,
+      source: narrative.source,
+    };
+    if (mode === "default") next.defaultNarrative = stored;
+    else next.deepNarrative = stored;
   } else if (previous.llm) {
     next.llm = previous.llm;
   }
@@ -927,14 +952,22 @@ async function writeNarratives(
       row.coverage && typeof row.coverage === "object" && !Array.isArray(row.coverage)
         ? (row.coverage as Record<string, unknown>)
         : {};
+    const nextCoverage: Record<string, unknown> = {
+      ...previous,
+      llm: llmCoverage({ ...extras, narrative }),
+    };
+    if (narrative.label === "B") {
+      nextCoverage.defaultNarrative = {
+        text: narrative.text,
+        headline: narrative.headline,
+        source: narrative.source,
+      };
+    }
     await prisma.pack.update({
       where: { id: row.id },
       data: {
         narrative: narrative.text,
-        coverage: {
-          ...previous,
-          llm: llmCoverage({ ...extras, narrative }),
-        } as Prisma.InputJsonValue,
+        coverage: nextCoverage as Prisma.InputJsonValue,
       },
     });
   }
@@ -1153,6 +1186,10 @@ export async function refineBridge(
     const replacement = packsToWrite(assembled);
     const plan = narrativePlan("B", session.city, seedNames(session.seeds), { items: replacement.items });
     const kept = readCoverageLlm(previous.llm);
+    const storedNarrative = mode === "default" ? previous.defaultNarrative : previous.deepNarrative;
+    const produced: PlanNarrative = storedNarrative
+      ? { label: "B", text: storedNarrative.text, headline: storedNarrative.headline, source: storedNarrative.source }
+      : templateFor(plan, locale);
     const extras: PlanCoverageExtras = {
       provider,
       offReason,
@@ -1160,49 +1197,24 @@ export async function refineBridge(
       anchorSource: kept?.anchorSource ?? "rule_b_fallback",
       failures: [],
       ruleB: readRuleB(previous.ruleB),
-      narratives: { B: templateFor(plan, locale) },
+      narratives: { B: produced },
     };
-    // Only the Bridge is rewritten. Plan A keeps its stored narrative and cards.
+    // Snapshot restore: cards and narration for this mode are reused. Zero Qloo / Gemini.
     await writeBridge(
       bridgeRow.id,
-      extras.narratives.B!.text,
+      produced.text,
       coverageWithSnapshots(previous, assembled.coverage, mode, null, extras),
       replacement.items,
       locale,
     );
     emit({ step: "assemble", status: "done" });
     emit({ step: "enrich", status: "skipped" });
-    emit({ step: "narrate", status: "active" });
-    const narration = await composeNarratives({ locale, plans: [plan], scope: "bridge" });
-    const produced = narration.plans[0]!;
-    const failures: LlmFailure[] = [...narration.failures];
-    if (produced.source === "llm" || narration.failures.length > 0) {
-      await writeBridge(
-        bridgeRow.id,
-        produced.text,
-        coverageWithSnapshots(previous, assembled.coverage, mode, null, {
-          ...extras,
-          failures,
-          narrativeTrace: narration.trace,
-          narratives: { B: produced },
-        }),
-        replacement.items,
-        locale,
-      );
-    }
-    emit({
-      step: "narrate",
-      status: "done",
-      detail: `B:${produced.source}`,
-      ...(failures.length > 0 ? { llmFallback: failures.join(",") } : {}),
-    });
+    emit({ step: "narrate", status: "done", detail: `B:${produced.source}`, llmFallback: "snapshot" });
     emit({
       step: "done",
       status: "done",
       packIds: [root.id, bridgeRow.id],
-      llmMs: narration.ms,
       geminiCalls: geminiCallCount(),
-      ...(failures.length > 0 ? { llmFallback: failures.join(",") } : {}),
     });
     return { packIds: [root.id, bridgeRow.id] };
   }

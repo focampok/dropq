@@ -236,7 +236,6 @@ describe("bridge snapshots", () => {
       ["assemble", "active", undefined],
       ["assemble", "done", undefined],
       ["enrich", "skipped", undefined],
-      ["narrate", "active", undefined],
       ["narrate", "done", "B:template"],
       ["done", "done", undefined],
     ]);

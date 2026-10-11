@@ -28,7 +28,11 @@ type Latest = {
     axis: "root" | "bridge";
     narrative: string | null;
     llm?: PlanLlm | null;
-    coverage: { notes?: { en?: string; es?: string }; mode?: "default" | "deep_cuts" } | null;
+    coverage: {
+      notes?: { en?: string; es?: string };
+      mode?: "default" | "deep_cuts";
+      cache?: { hit?: boolean; builtAt?: string };
+    } | null;
     items: {
       slot: "watch" | "listen" | "wear" | "do";
       hop: number;
@@ -56,6 +60,7 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
   const [error, setError] = useState<string | null>(null);
   const [bridgeMode, setBridgeMode] = useState<"default" | "deep_cuts">("default");
   const [bridgeBusy, setBridgeBusy] = useState(false);
+  const [cacheNote, setCacheNote] = useState<{ label: string; exact: string } | null>(null);
 
   // Applies one snapshot of the stored packs. It runs once at assemble, when only the
   // template narrative exists, and again at narrate, when the LLM text replaces it.
@@ -73,9 +78,19 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
       setAiNarrative(aiFlags(body));
       setPack(toPack(sessionId, body));
       setBridgeMode(modeOf(body));
+      const cache = body.plans[0]?.coverage?.cache;
+      if (cache?.hit && cache.builtAt) {
+        const when = relativeTime(cache.builtAt, locale);
+        setCacheNote({
+          label: dictionary.pack.cachedNote.replace("{when}", when),
+          exact: new Date(cache.builtAt).toISOString(),
+        });
+      } else {
+        setCacheNote(null);
+      }
       return body;
     },
-    [sessionId],
+    [dictionary.pack.cachedNote, locale, sessionId],
   );
 
   useEffect(() => {
@@ -223,8 +238,21 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
       bridgeMode={bridgeMode}
       bridgeBusy={bridgeBusy}
       onBridgeMode={(mode) => void refine(mode)}
+      cacheNote={cacheNote}
     />
   );
+}
+
+function relativeTime(iso: string, locale: Locale): string {
+  const then = new Date(iso).getTime();
+  const delta = Math.max(0, Date.now() - then);
+  const minutes = Math.floor(delta / 60_000);
+  if (minutes < 1) return locale === "es" ? "hace un momento" : "just now";
+  if (minutes < 60) return locale === "es" ? `hace ${minutes} min` : `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return locale === "es" ? `hace ${hours} h` : `${hours} h ago`;
+  const days = Math.floor(hours / 24);
+  return locale === "es" ? `hace ${days} d` : `${days} d ago`;
 }
 
 function aiFlags(body: Latest): { A?: boolean; B?: boolean } {

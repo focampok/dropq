@@ -187,3 +187,14 @@ model BaselineRun {
   @@index([sessionId])
   @@map("baseline_run")
 }
+
+model PackCache {
+  signature String   @id
+  payload   Json
+  builtAt   DateTime @map("built_at")
+  qlooCalls Int      @default(0) @map("qloo_calls")
+  isPreset  Boolean  @default(false) @map("is_preset")
+
+  @@index([builtAt])
+  @@map("pack_cache")
+}

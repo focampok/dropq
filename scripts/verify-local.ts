@@ -8,9 +8,8 @@
  *
  *   pnpm verify:local
  *
- * The pack and refine routes allow 4 requests per minute and 20 per hour per forwarded
- * IP, and one preset spends four per run, so each step presents its own forwarded IP.
- * That is what the limiter models anyway: one bucket per visitor.
+ * Rate limits are per session / IP. Each step presents its own forwarded IP so the
+ * verifier never trips the live-generation windows while exercising all presets.
  */
 import { placeTagExcluded } from "../src/lib/pack/assemble";
 import { sharesWordSequence, wordOverlapRatio, workedExampleText } from "../src/lib/pipeline/copy-check";
@@ -19,7 +18,15 @@ import { STEP_IDS } from "../src/lib/i18n/types";
 
 const BASE = process.env.BASE_URL?.trim() || "http://localhost:3000";
 
-type Event = { step?: string; status?: string; detail?: string; packIds?: string[]; llmFallback?: string; geminiCalls?: number };
+type Event = {
+  step?: string;
+  status?: string;
+  detail?: string;
+  packIds?: string[];
+  llmFallback?: string;
+  geminiCalls?: number;
+  cached?: boolean;
+};
 
 type Item = {
   slot: "watch" | "listen" | "wear" | "do";
@@ -147,6 +154,9 @@ type Result = {
   models: { kind: "anchors" | "narrative"; id: string }[];
   attempts: number;
   geminiCalls: number;
+  cacheHit: boolean;
+  cachePaintMs: number;
+  cacheCardsMatch: boolean;
   failures: string[];
 };
 
@@ -294,6 +304,37 @@ async function runPreset(preset: (typeof DEMO_PRESETS)[number]): Promise<Result>
   await denied.body?.cancel();
   if (denied.status !== 403) failures.push(`${name}: a second cookie jar got ${denied.status}, expected 403`);
 
+  // Second identical request from a new cookie jar must be an instant cache hit.
+  const jar2 = new Jar();
+  const session2 = await jar2.json<{ id?: string }>("/api/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ city: preset.city as CityValue, eventKind: preset.eventKind as EventKind, locale: "en" }),
+  });
+  const sessionId2 = session2.body?.id;
+  if (!sessionId2) throw new Error(`${name}: no second session id`);
+  await jar2.json(`/api/session/${sessionId2}/seeds`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ seeds: preset.seeds.map((seed) => ({ rawText: seed.rawText, source: "preset" })) }),
+  });
+  const pack2 = await jar2.stream(`/api/session/${sessionId2}/pack`, "{}");
+  const cacheHeader = pack2.headers.get("x-dropq-cache");
+  const cacheHit =
+    cacheHeader === "hit" &&
+    pack2.events.some((event) => event.cached === true) &&
+    (pack2.events.at(-1)?.geminiCalls ?? 0) === 0;
+  if (!cacheHit) failures.push(`${name}: second pack was not a free cache hit (header=${cacheHeader})`);
+  if (pack2.ms >= 500) failures.push(`${name}: cached stream took ${pack2.ms}ms (>=500)`);
+  const latest2 = await jar2.json<Latest>(`/api/session/${sessionId2}/packs/latest`);
+  const cards1 = [...planA.items, ...planB.items].map((item) => item.entityId).sort().join("|");
+  const plans2 = latest2.body?.plans ?? [];
+  const cards2 = plans2.flatMap((plan) => plan.items.map((item) => item.entityId)).sort().join("|");
+  const cacheCardsMatch = cards1 === cards2 && cards1.length > 0;
+  if (!cacheCardsMatch) failures.push(`${name}: cached cards differ from the first pack`);
+  // Deep cuts on a cached copy must still 403 for strangers and keep the cache row immutable
+  // (session copy changes; verified by the refine toggles above on the first session).
+
   const llm = planB.llm;
   const health = await jar.json<{ quota: { remaining?: number; blocked: boolean }; llm: string }>("/api/health");
 
@@ -315,6 +356,9 @@ async function runPreset(preset: (typeof DEMO_PRESETS)[number]): Promise<Result>
     models,
     attempts,
     geminiCalls: Math.max(pack.events.at(-1)?.geminiCalls ?? 0, ...toggles.map((toggle) => toggle.events.at(-1)?.geminiCalls ?? 0)),
+    cacheHit,
+    cachePaintMs: pack2.ms,
+    cacheCardsMatch,
     failures,
   };
 }
@@ -371,6 +415,9 @@ async function main(): Promise<void> {
         models: [],
         attempts: 0,
         geminiCalls: 0,
+        cacheHit: false,
+        cachePaintMs: 0,
+        cacheCardsMatch: false,
         failures: [error instanceof Error ? error.message : String(error)],
       });
     }
@@ -383,11 +430,11 @@ async function main(): Promise<void> {
     return sorted.length % 2 === 0 ? Math.round((sorted[mid - 1]! + sorted[mid]!) / 2) : sorted[mid]!;
   };
 
-  console.log("| preset | slots A/B | watch tv | shared ids | do clean | steps | first paint | stream end | llm | anchor | narrative |");
-  console.log("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  console.log("| preset | slots A/B | watch tv | shared ids | do clean | steps | first paint | stream end | cache hit | cache ms | cards | llm | anchor | narrative |");
+  console.log("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of results) {
     console.log(
-      `| ${row.preset} | ${row.slotsA}/${row.slotsB} | ${row.watchTv ? "yes" : "NO"} | ${row.crossShared} | ${row.doClean ? "yes" : "NO"} | ${row.stepsOk ? "ok" : "FAIL"} | ${row.firstPaintMs} ms | ${row.streamMs} ms | ${row.llm} | ${row.anchorSource} | ${row.narrative} |`,
+      `| ${row.preset} | ${row.slotsA}/${row.slotsB} | ${row.watchTv ? "yes" : "NO"} | ${row.crossShared} | ${row.doClean ? "yes" : "NO"} | ${row.stepsOk ? "ok" : "FAIL"} | ${row.firstPaintMs} ms | ${row.streamMs} ms | ${row.cacheHit ? "yes" : "NO"} | ${row.cachePaintMs} ms | ${row.cacheCardsMatch ? "same" : "DIFF"} | ${row.llm} | ${row.anchorSource} | ${row.narrative} |`,
     );
   }
   console.log(

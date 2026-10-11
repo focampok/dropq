@@ -27,6 +27,7 @@ export function PackView({
   bridgeMode = "default",
   onBridgeMode,
   bridgeBusy = false,
+  cacheNote = null,
 }: {
   locale: Locale;
   pack: AssembledPack | null;
@@ -39,6 +40,7 @@ export function PackView({
   bridgeMode?: "default" | "deep_cuts";
   onBridgeMode?: (mode: "default" | "deep_cuts") => void;
   bridgeBusy?: boolean;
+  cacheNote?: { label: string; exact: string } | null;
 }) {
   const dictionary = getDictionary(locale);
   const note = pack?.coverage.notes[locale] ?? "";
@@ -55,6 +57,12 @@ export function PackView({
         </div>
         {mock ? <Badge>{dictionary.pack.mockBadge}</Badge> : null}
       </div>
+
+      {cacheNote ? (
+        <p className="mt-3 text-xs text-paper/55" title={cacheNote.exact}>
+          {cacheNote.label}
+        </p>
+      ) : null}
 
       {anchors && anchors.length > 0 ? (
         <ul className="mt-4 flex flex-wrap gap-2 text-sm text-paper/80">

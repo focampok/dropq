@@ -61,26 +61,32 @@ The place slot tries `PLACE_CATEGORY_TAGS` first and falls back to `PLACE_CATEGO
 
 ## The LLM
 
-Pick a provider with `LLM_PROVIDER`, and the model with `LLM_MODEL` or `NEBIUS_MODEL`:
+Pick a provider with `LLM_PROVIDER`. Model ids and the API key are configuration: they belong in `.env`, never in source or git.
 
 | `LLM_PROVIDER` | Provider | Variables it needs |
 | --- | --- | --- |
 | `nebius` | Nebius (OpenAI-compatible) | `NEBIUS_API_KEY`, `NEBIUS_BASE_URL`, `NEBIUS_MODEL` |
-| `google` | Google Generative AI | `GOOGLE_GENERATIVE_AI_API_KEY`, `LLM_MODEL` |
+| `google` | Google Generative AI | a key and a principal model, below |
 | empty | off, unless the three Nebius variables are set, which means `nebius` | — |
 
-There is no default model for `google`: without `LLM_MODEL` the provider stays off and `coverage.llm.offReason` says why.
+Google reads `GOOGLE_GENERATIVE_AI_API_KEY`, or `GEMINI_API_KEY` when the first is empty. The chain principal is `GEMINI_MODEL`, or `LLM_MODEL` when `GEMINI_MODEL` is empty, then `GEMINI_FALLBACK_MODELS` (comma-separated, trimmed, empties and the principal dropped). There is no default model id. A model that appears in a model list can still return 404 on `generateContent`; `gemini-2.5-flash` does that for some keys, so it is not a default. No key sets `coverage.llm.off` to `no_key`. No principal sets it to `no_model`. The process still boots.
+
+`GEMINI_RETRY_ATTEMPTS` (default 3), `GEMINI_RETRY_DELAY_MS` (default 1000) and `GEMINI_RETRY_MAX_DELAY_MS` (default 8000) use `Number(env) || default`, so `0`, empty and `NaN` fall back to those defaults. Attempts are then at least 1. The budget for one call is attempts × models. A permanent error (400, 401, 403, 404, 422, an invalid prompt, an unknown model) discards that model and continues with no sleep. A transient error (429, 500, 502, 503, 504, no HTTP status, or a network, timeout, abort or socket failure) sleeps `min(delay × 2^min(n-1, 5), cap)` and rotates to the next model that is still in play. The model that just succeeded is tried first on the next call. `generateObject` is called with `maxRetries: 0`, so this loop is the only retry. When the budget or the models run out, the last error is thrown and the caller uses rule B or the template. `coverage.llm.failures` records `rate_limited`, `model_unavailable`, `auth`, `server_error`, `network` or `deadline` from that error.
+
+One difference from a plain retry loop: the anchor call sits before first paint, so the existing wall-clock deadlines (anchors 6 s, narration 12 s) wrap the whole loop. A sleep that would end after the deadline is not started, and a hung attempt is aborted. Validation and JSON failures stay on the same model for one repair retry and do not discard it.
+
+Gemini calls set `providerOptions.google.thinkingConfig.thinkingLevel` to `minimal` (the lowest level the installed `@ai-sdk/google` provider allows). If a model rejects that option, the next attempt for that model omits it.
 
 What the LLM does:
 
-- Picks the Bridge anchors from a closed list of candidates that rule B already ranked. It can re-rank them; it can never introduce one. An id outside the list, two ids from one slot, or a timeout falls back to rule B and sets `coverage.llm.anchorSource` to `rule_b_fallback`.
+- Picks the Bridge anchors from a closed list of candidates that rule B already ranked. It can re-rank them; it can never introduce one. An id outside the list, two ids from one slot, or a transport failure falls back to rule B and sets `coverage.llm.anchorSource` to `rule_b_fallback`.
 - Writes the connecting sentence and headline for each plan. It never types an item name: it writes tokens (`[[watch]]`, `[[listen]]`, `[[wear]]`, `[[do]]`, `[[anchor1]]`, `[[city]]`) and the server substitutes the pack's own names after validating them. A token that is not allowed, a repeated token, a URL, an over-long line or a narrative that names nothing is rejected, then one repair retry runs, then the template stays.
 
 What it never does: create, add, replace, or rank items. Every card comes from Qloo.
 
-Every call uses `generateObject` with a Zod schema, a low temperature and a 12 s timeout; anchor choice gets 6 s because it happens before `assemble`. The pack is stored with the template narrative first, so first paint never waits for the LLM, and a `narrate` step then swaps in the LLM text when it arrives. The UI shows the small AI badge only on a narrative whose own `source` is `llm`.
+Every call uses `generateObject` with a Zod schema and a low temperature. The pack is stored with the template narrative first, so first paint never waits for narration, and a `narrate` step then swaps in the LLM text when it arrives. The UI shows the small AI badge only on a narrative whose own `source` is `llm`. `coverage.llm` also records `modelUsed`, `attempts`, `chainTried` and `latencyMs`.
 
-A deliberating model can spend most of that 12 s thinking. If narration keeps falling back to the template, point `LLM_MODEL` at a model that answers faster: `coverage.llm.failures` records `timeout` when that is the reason.
+`pnpm probe:llm` calls each model in the chain once with the real narration schema, on the saved Latin tour fixture, and prints latency only.
 
 ## Local verification
 
@@ -92,7 +98,7 @@ pnpm verify:images    # HEAD requests to the image hosts, no bodies
 pnpm verify:ui        # Chromium at 1280 px and 390 px, screenshots to docs/screenshots
 ```
 
-`verify:local` runs the pack stream for each preset and asserts the invariants, the session gate, the Deep cuts round trip, the narration fallback rate and the Qloo quota, then exits non-zero if anything fails. `verify:ui` needs a Chromium in the Playwright cache and never downloads one.
+`verify:local` runs the pack stream for each preset, sequentially, and asserts the invariants, the session gate, the Deep cuts round trip, the narration fallback rate, the copy checks and the Qloo quota, then exits non-zero if anything fails. `--llm-budget <n>` (default 80) stops the script when the reported Gemini calls would pass that budget. `verify:ui` needs a Chromium in the Playwright cache and never downloads one.
 
 ## Rate limit and quota
 
@@ -120,7 +126,7 @@ Demo presets: Roots GT → LA is Ricardo Arjona · Pollo Campero · Gaby Moreno.
 
 Use one web service that runs Next as a continuous Node process. Add the Postgres plugin.
 
-Set these variables by name: `DATABASE_URL`, `SESSION_SECRET`, `QLOO_API_KEY`, `QLOO_BASE_URL`, `LLM_PROVIDER`, `LLM_MODEL`, `NEBIUS_API_KEY`, `NEBIUS_BASE_URL`, `NEBIUS_MODEL`, `GOOGLE_GENERATIVE_AI_API_KEY`.
+Set these variables by name: `DATABASE_URL`, `SESSION_SECRET`, `QLOO_API_KEY`, `QLOO_BASE_URL`, `LLM_PROVIDER`, `LLM_MODEL`, `NEBIUS_API_KEY`, `NEBIUS_BASE_URL`, `NEBIUS_MODEL`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_FALLBACK_MODELS`, `GEMINI_RETRY_ATTEMPTS`, `GEMINI_RETRY_DELAY_MS`, `GEMINI_RETRY_MAX_DELAY_MS`.
 
 - Build command: `pnpm build`
 - Release / pre-deploy command: `pnpm db:deploy`

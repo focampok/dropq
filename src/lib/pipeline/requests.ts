@@ -1,5 +1,6 @@
 import type { InsightsParams, InsightEntityType } from "@/lib/qloo/types";
 import {
+  BRIDGE_USE_LOCATION,
   BRIDGE_VARIANT,
   DEEP_CUTS_POPULARITY_MAX,
   PLACE_CATEGORY_TAGS,
@@ -85,7 +86,9 @@ export function insightArgs(input: {
   }
 
   if (input.hop === 1 && input.slot !== "do") {
-    args.signalLocationQuery = input.city;
+    // City-aware only where the T4 probe showed the destination signal buys a better
+    // list for that slot type (see BRIDGE_USE_LOCATION), and never in Roots.
+    if (BRIDGE_USE_LOCATION[input.slot]) args.signalLocationQuery = input.city;
     const variant = input.bridgeVariant ?? BRIDGE_VARIANT;
     if (variant === "b") args.biasTrends = "high";
     if (variant === "c") args.filterPopularityMax = 0.98;

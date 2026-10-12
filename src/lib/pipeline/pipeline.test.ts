@@ -4,6 +4,7 @@ import { substituteTokens, tokensIn, validateNarrative } from "@/lib/pipeline/ll
 import { DEMO_PRESETS } from "@/lib/presets";
 import {
   BRIDGE_ANCHOR_RULE,
+  BRIDGE_USE_LOCATION,
   PINNED_PRESETS,
   PLACE_RADIUS_FALLBACK_M,
   confidenceForSharedTags,
@@ -491,5 +492,49 @@ describe("evidence panel and the one confidence rule", () => {
     const evidence = item?.evidence as { anchor?: { sharedTagCount?: number } } | undefined;
     expect(evidence?.anchor?.sharedTagCount).toBe(1);
     expect(item?.confidence).toBe("low");
+  });
+});
+
+describe("Bridge location signal", () => {
+  const args = (slot: "watch" | "listen" | "wear" | "do", hop: 0 | 1, variant: "a" | "deep" = "a") =>
+    insightArgs({
+      slot,
+      eventKind: "tour",
+      anchors: ["anchor"],
+      city: "Houston",
+      hop,
+      exclude: [],
+      bridgeVariant: variant,
+    });
+
+  it("sends the destination only on hop 1 of the slots that enable it", () => {
+    for (const slot of ["listen", "watch", "wear"] as const) {
+      const enabled = BRIDGE_USE_LOCATION[slot];
+      expect(args(slot, 1)?.signalLocationQuery, slot).toBe(enabled ? "Houston" : undefined);
+      // Roots never carries the destination, whatever the flag says.
+      expect(args(slot, 0)?.signalLocationQuery, `${slot} hop 0`).toBeUndefined();
+    }
+  });
+
+  it("never sends the destination on the place slot's own request", () => {
+    const place = args("do", 1);
+    expect(place?.signalLocationQuery).toBeUndefined();
+    expect(place?.filterLocation).toContain("POINT(");
+  });
+
+  it("keeps the two variants in different cache entries", () => {
+    const withLocation = args("listen", 1)!;
+    const withoutLocation = { ...withLocation, signalLocationQuery: undefined };
+    expect(locationKey(withLocation)).not.toBe(locationKey(withoutLocation));
+    // And hop 0 of the same slot is a third entry again.
+    expect(locationKey(args("listen", 0)!)).not.toBe(locationKey(withLocation));
+  });
+
+  it("carries the signal into the Deep cuts variant the snapshots store", () => {
+    const deep = args("listen", 1, "deep")!;
+    const plain = args("listen", 1, "a")!;
+    expect(deep.signalLocationQuery).toBe(plain.signalLocationQuery);
+    expect(deep.filterPopularityMax).toBe(0.9);
+    expect(locationKey(deep)).not.toBe(locationKey(plain));
   });
 });

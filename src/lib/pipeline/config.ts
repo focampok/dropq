@@ -57,6 +57,34 @@ export const PLACE_USE_ANCHORS = false;
 export const DO_EXCLUDE_TAG_KEYWORDS = ["hotel", "lodging", "resort", "motel", "inn", "suites"] as const;
 
 /**
+ * Whether the Bridge's hop-1 request for a slot sends
+ * `signal.location.query=<destination city>`. Roots never does.
+ *
+ * T4 probe: the three presets, the `listen`, `watch` and `wear` slots, the anchors the
+ * stored packs used, the same `take`, with and without the parameter (18 requests).
+ *   listen  changed 100% / 46% / 100% of the list.
+ *           With it, Los Angeles answers with its Latin circuit (Los Bukis, Juan Gabriel,
+ *           Café Tacvba) and New York with Mitski and Rina Sawayama — names of those
+ *           scenes. Without it, both fall back to generic Latin pop and to Japanese acts.
+ *   watch   changed 100% / 89% / 89%.
+ *           With it Los Angeles returns Gentefied, a show set in the city, and Houston a
+ *           contemporary American list instead of 1970s sports dramas. Judgement call: the
+ *           New York anime list reads slightly better without it.
+ *   wear    changed 100% / 89% / 95%.
+ *           Only the city list avoids the anchor's own family — Nike in Houston,
+ *           Crunchyroll in New York — and the noisy Cheetos / Diet Pepsi / Playstation
+ *           set R7 flagged.
+ * The bar in the pass brief (at least 40% of the list changes and a city-tied name sits in
+ * the top five) is met for all three, so all three stay on. The flag exists so that is a
+ * recorded decision, not an accident, and so a future probe can turn one off.
+ */
+export const BRIDGE_USE_LOCATION: Record<"listen" | "watch" | "wear", boolean> = {
+  listen: true,
+  watch: true,
+  wear: true,
+};
+
+/**
  * One confidence rule for every card that has a reference set: the number of
  * *distinct* shared tags. Roots items are measured against the seed anchors; Bridge
  * items against the anchor that produced them (their own confidence is capped by it).

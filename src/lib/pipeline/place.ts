@@ -1,4 +1,5 @@
 import { placeTagExcluded } from "@/lib/pack/assemble";
+import { PLACE_LODGING_TAG_WINDOW } from "@/lib/pipeline/config";
 
 export type PlaceCard = {
   entityId: string;
@@ -22,11 +23,8 @@ export type PlaceOutcome<T extends PlaceCard> = {
   usedFallback: boolean;
 };
 
-/** assemblePack only inspects the first eight tags, so the count must use the same window. */
-const LODGING_TAG_WINDOW = 8;
-
 function isLodging(card: PlaceCard): boolean {
-  return card.tags.slice(0, LODGING_TAG_WINDOW).some((tag) => placeTagExcluded(tag));
+  return card.tags.slice(0, PLACE_LODGING_TAG_WINDOW).some((tag) => placeTagExcluded(tag));
 }
 
 function isUsable(card: PlaceCard, rootsIds: Set<string>): boolean {

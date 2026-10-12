@@ -66,6 +66,14 @@ export const PLACE_USE_ANCHORS = false;
 export const DO_EXCLUDE_TAG_KEYWORDS = ["hotel", "lodging", "resort", "motel", "inn", "suites"] as const;
 
 /**
+ * The do slot's lodging filter reads only this many tags. The window matters because the
+ * keywords are substrings, not words: "Innovation", "Innovative" and "Dinner" all contain
+ * "inn". Both the pipeline's own usability count (`placeStages`) and the final check in
+ * `assemblePack` must use the same window, or the two disagree about the same card.
+ */
+export const PLACE_LODGING_TAG_WINDOW = 8;
+
+/**
  * Whether the Bridge's hop-1 request for a slot sends
  * `signal.location.query=<destination city>`. Roots never does.
  *

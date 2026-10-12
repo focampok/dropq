@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DO_EXCLUDE_TAG_KEYWORDS } from "@/lib/pipeline/config";
+import { DO_EXCLUDE_TAG_KEYWORDS, PLACE_LODGING_TAG_WINDOW } from "@/lib/pipeline/config";
 
 export const SLOTS = ["watch", "listen", "wear", "do"] as const;
 
@@ -100,10 +100,16 @@ export function placeTagExcluded(name: string): boolean {
   return DO_EXCLUDE_TAG_KEYWORDS.some((word) => lower.includes(word));
 }
 
+/**
+ * Every tag the card stores is kept for display, but the lodging filter reads only the
+ * first few, the same window `placeStages` counted with — see PLACE_LODGING_TAG_WINDOW.
+ */
 function hitTagNames(item: AssembledItem): string[] {
   const value = item.evidence?.hitTags;
   if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === "string");
+  return value
+    .filter((entry): entry is string => typeof entry === "string")
+    .slice(0, PLACE_LODGING_TAG_WINDOW);
 }
 
 function keepValidItems(items: unknown[]): AssembledItem[] {

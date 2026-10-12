@@ -3,6 +3,7 @@ import { assemblePack } from "@/lib/pack/assemble";
 import fixture from "@/lib/pack/fixture.json";
 import { invalidFixture } from "@/lib/pack/invalid-fixture";
 import { stubPack } from "@/lib/pack/stub-pack";
+import { PLACE_LODGING_TAG_WINDOW } from "@/lib/pipeline/config";
 
 function entityIds(pack: { items: { entityId: string }[] }) {
   return pack.items.map((item) => item.entityId);
@@ -98,5 +99,39 @@ describe("assemblePack", () => {
     for (const item of stubPack.packs.find((pack) => pack.axis === "bridge")!.items) {
       expect(rootIds.has(item.entityId)).toBe(false);
     }
+  });
+});
+
+describe("the lodging filter's tag window", () => {
+  const place = (tags: string[]) => ({
+    slot: "do",
+    entityId: "place-1",
+    name: "A Venue",
+    type: "urn:entity:place",
+    hop: 0,
+    imageUrl: null,
+    affinity: null,
+    explain: { en: "", es: "" },
+    confidence: "medium" as const,
+    provenance: "qloo" as const,
+    evidence: { hitTags: tags, chosenByCity: true },
+  });
+  const packWith = (tags: string[]) => ({
+    sessionId: "s",
+    city: "Los Angeles",
+    eventKind: "comunidad",
+    seeds: [],
+    packs: [{ label: "A", axis: "root", items: [place(tags)] }],
+  });
+
+  it("reads only the first tags, where the pipeline counted them", () => {
+    // "Innovation" contains "inn" and "Dinner" contains "inn"; both sat past the window
+    // on real cards and emptied the Bridge's do slot once every tag was stored.
+    const early = Array.from({ length: PLACE_LODGING_TAG_WINDOW }, (_, index) => `Tag ${index}`);
+    expect(assemblePack(packWith([...early, "Innovation", "Dinner"])).packs[0]?.items).toHaveLength(1);
+  });
+
+  it("still drops a place whose own early tags read as lodging", () => {
+    expect(assemblePack(packWith(["Resort hotel", "Lodging"])).packs[0]?.items).toHaveLength(0);
   });
 });

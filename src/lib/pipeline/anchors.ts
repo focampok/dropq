@@ -1,4 +1,8 @@
-import { BRIDGE_ANCHOR_RULE, WATCH_ANCHOR_MIN_SHARED } from "@/lib/pipeline/config";
+import {
+  BRIDGE_ANCHOR_RULE,
+  WATCH_ANCHOR_MIN_SHARED,
+  confidenceForSharedTags,
+} from "@/lib/pipeline/config";
 
 export type AnchorCandidate = {
   id: string;
@@ -57,11 +61,9 @@ export function sharedTagNames(candidate: AnchorCandidate, seedTags: Set<string>
   return names;
 }
 
-/** high at 3 or more shared tags, medium at 2, low at 1 or none. */
+/** high at 3 or more shared tags, medium at 2, low at 1 or none — the one confidence rule. */
 export function anchorConfidence(shared: number): AnchorConfidence {
-  if (shared >= 3) return "high";
-  if (shared === 2) return "medium";
-  return "low";
+  return confidenceForSharedTags(shared);
 }
 
 /**

@@ -3,8 +3,14 @@ import { BookOpen, Headphones, Landmark, Shirt } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { getDictionary, type Locale } from "@/lib/i18n";
-import { STEP_IDS, type StepId } from "@/lib/i18n/types";
+import {
+  ENTITY_TYPE_KEYS,
+  STEP_IDS,
+  type EntityTypeKey,
+  type StepId,
+} from "@/lib/i18n/types";
 import { SLOTS, type AssembledItem, type AssembledPack } from "@/lib/pack/assemble";
+import { tagPreview } from "@/lib/pipeline/tags";
 
 type SlotName = (typeof SLOTS)[number];
 
@@ -118,10 +124,11 @@ export function PackView({
             ) : null}
             {narratives?.[plan.label] ? (
               <p className="mt-2 text-sm text-paper/75">
-                {narratives[plan.label]}
+                <span data-narrative-text>{narratives[plan.label]}</span>
                 {aiNarrative?.[plan.label] ? (
                   <span
-                    className="ml-2 rounded border border-paper/25 px-1.5 py-0.5 align-middle font-mono text-[10px] uppercase tracking-wide text-paper/60"
+                    data-ai-badge
+                    className="ml-2 inline-block rounded border border-paper/25 px-1.5 py-0.5 align-middle font-mono text-[10px] uppercase tracking-wide text-paper/60"
                     title={dictionary.pack.aiNarrativeHint}
                   >
                     {dictionary.pack.aiNarrative}
@@ -171,11 +178,12 @@ export function PackView({
 function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
   const dictionary = getDictionary(locale);
   const [broken, setBroken] = useState(false);
-  const affinity =
-    item.affinity === null || item.affinity === undefined
-      ? dictionary.pack.noAffinity
-      : String(item.affinity);
   const anchor = anchorOf(item);
+  const cityChosen = item.evidence?.chosenByCity === true;
+  const tags = tagsOf(item, "hitTags");
+  const shared = cityChosen ? [] : tagsOf(item, "sharedTags");
+  const explainability = explainOf(item);
+  const prose = item.explain[locale]?.trim() ?? "";
 
   return (
     <Card>
@@ -185,7 +193,7 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
             {dictionary.slots[item.slot]}
           </p>
           <h3 className="mt-1 text-lg font-medium">{item.name}</h3>
-          {item.evidence?.chosenByCity === true ? (
+          {cityChosen ? (
             <p className="mt-1 text-xs uppercase tracking-[0.14em] text-ink/50">
               {dictionary.pack.chosenForCity}
             </p>
@@ -194,10 +202,12 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
         {item.provenance === "mock" ? <Badge>{dictionary.pack.mockBadge}</Badge> : null}
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="flex gap-3">
-          <CardImage item={item} broken={broken} onBroken={() => setBroken(true)} locale={locale} />
-          <p className="text-sm leading-relaxed text-ink/75">{item.explain[locale]}</p>
-        </div>
+        {prose ? (
+          <div className="flex gap-3">
+            <CardImage item={item} broken={broken} onBroken={() => setBroken(true)} locale={locale} />
+            <p className="text-sm leading-relaxed text-ink/75">{prose}</p>
+          </div>
+        ) : null}
         <div className="rounded-md bg-ink/[0.04] p-3">
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-ink/50">
             {dictionary.pack.whyQloo}
@@ -206,24 +216,42 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
             <dt className="text-ink/50">{dictionary.pack.name}</dt>
             <dd>{item.name}</dd>
             <dt className="text-ink/50">{dictionary.pack.type}</dt>
-            <dd className="break-all">{item.type}</dd>
+            <dd title={item.type}>{dictionary.pack.entityTypes[entityTypeKey(item.type)]}</dd>
             <dt className="text-ink/50">{dictionary.pack.entityId}</dt>
             <dd className="break-all font-mono text-xs">{item.entityId}</dd>
             <dt className="text-ink/50">{dictionary.pack.hop}</dt>
-            <dd>{item.hop}</dd>
-            <dt className="text-ink/50">{dictionary.pack.affinity}</dt>
-            <dd>{affinity}</dd>
+            <dd>{hopLabel(item, anchor, dictionary)}</dd>
+            {item.affinity === null || item.affinity === undefined ? null : (
+              <>
+                <dt className="text-ink/50">{dictionary.pack.affinity}</dt>
+                <dd>{item.affinity}</dd>
+              </>
+            )}
             <dt className="text-ink/50">{dictionary.pack.confidence}</dt>
             <dd>{dictionary.pack.confidenceValue[item.confidence]}</dd>
-            <dt className="text-ink/50">{dictionary.pack.hitTags}</dt>
-            <dd>{tagsOf(item, "hitTags")}</dd>
-            <dt className="text-ink/50">{dictionary.pack.sharedTags}</dt>
-            <dd>{tagsOf(item, "sharedTags")}</dd>
+            {tags.length > 0 ? (
+              <>
+                <dt className="text-ink/50">{dictionary.pack.hitTags}</dt>
+                <dd>
+                  <TagList tags={tags} locale={locale} />
+                </dd>
+              </>
+            ) : null}
+            {shared.length > 0 ? (
+              <>
+                <dt className="text-ink/50">{dictionary.pack.sharedTags}</dt>
+                <dd>
+                  <TagList tags={shared} locale={locale} />
+                </dd>
+              </>
+            ) : null}
             {anchor ? (
               <>
                 <dt className="text-ink/50">{dictionary.pack.anchorEvidence}</dt>
                 <dd>
-                  {anchor.sharedTags.length > 0 ? anchor.sharedTags.join(", ") : "—"}
+                  {anchor.sharedTags.length > 0 ? (
+                    <TagList tags={anchor.sharedTags} locale={locale} />
+                  ) : null}
                   {anchor.confidence === "low" ? (
                     <span className="ml-2 uppercase tracking-[0.14em] text-stamp">
                       {dictionary.pack.weakSignal}
@@ -232,13 +260,67 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
                 </dd>
               </>
             ) : null}
-            <dt className="text-ink/50">{dictionary.pack.explainability}</dt>
-            <dd className="break-all">{explainOf(item)}</dd>
+            {explainability ? (
+              <>
+                <dt className="text-ink/50">{dictionary.pack.explainability}</dt>
+                <dd className="break-all">{explainability}</dd>
+              </>
+            ) : null}
+            {cityChosen ? (
+              <>
+                <dt className="text-ink/50">{dictionary.pack.chosenForCity}</dt>
+                <dd>{dictionary.pack.chosenForCityEvidence}</dd>
+              </>
+            ) : null}
           </dl>
         </div>
       </CardContent>
     </Card>
   );
+}
+
+/**
+ * Long tag lists stay readable: the first few, then one control that reveals the rest.
+ * The cap is display-only, so the count behind it is still the full distinct list.
+ */
+function TagList({ tags, locale }: { tags: string[]; locale: Locale }) {
+  const dictionary = getDictionary(locale);
+  const [expanded, setExpanded] = useState(false);
+  const { shown: preview, hidden } = tagPreview(tags);
+  const shown = expanded ? tags : preview;
+  return (
+    <span className="break-words">
+      {shown.join(", ")}
+      {hidden > 0 ? (
+        <button
+          type="button"
+          data-tags-toggle
+          onClick={() => setExpanded((value) => !value)}
+          className="ml-1 rounded border border-line px-1.5 text-xs text-ink/60 hover:bg-ink/5"
+        >
+          {expanded
+            ? dictionary.pack.lessTags
+            : dictionary.pack.moreTags.replace("{count}", String(hidden))}
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
+function entityTypeKey(type: string): EntityTypeKey {
+  const suffix = type.includes(":") ? type.slice(type.lastIndexOf(":") + 1) : type;
+  return (ENTITY_TYPE_KEYS as readonly string[]).includes(suffix) ? (suffix as EntityTypeKey) : "unknown";
+}
+
+function hopLabel(
+  item: AssembledItem,
+  anchor: { name: string } | null,
+  dictionary: ReturnType<typeof getDictionary>,
+): string {
+  if (item.hop === 1 && anchor?.name) {
+    return dictionary.pack.viaAnchor.replace("{anchor}", anchor.name);
+  }
+  return dictionary.pack.fromAnchors;
 }
 
 /**
@@ -285,11 +367,14 @@ function CardImage({
   );
 }
 
-function anchorOf(item: AssembledItem): { sharedTags: string[]; confidence: string } | null {
+function anchorOf(
+  item: AssembledItem,
+): { name: string; sharedTags: string[]; confidence: string } | null {
   const anchor = item.evidence?.anchor;
   if (!anchor || typeof anchor !== "object" || Array.isArray(anchor)) return null;
-  const record = anchor as { sharedTags?: unknown; confidence?: unknown };
+  const record = anchor as { name?: unknown; sharedTags?: unknown; confidence?: unknown };
   return {
+    name: typeof record.name === "string" ? record.name : "",
     sharedTags: Array.isArray(record.sharedTags)
       ? record.sharedTags.filter((tag): tag is string => typeof tag === "string")
       : [],
@@ -297,14 +382,15 @@ function anchorOf(item: AssembledItem): { sharedTags: string[]; confidence: stri
   };
 }
 
-function tagsOf(item: AssembledItem, key: "hitTags" | "sharedTags"): string {
+/** Only the tags that were actually stored; a missing row is not rendered at all. */
+function tagsOf(item: AssembledItem, key: "hitTags" | "sharedTags"): string[] {
   const value = item.evidence?.[key];
-  if (!Array.isArray(value) || value.length === 0) return "—";
-  return value.filter((entry) => typeof entry === "string").join(", ") || "—";
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
 }
 
 function explainOf(item: AssembledItem): string {
   const value = item.evidence?.explainability;
-  if (typeof value !== "string" || !value.includes(item.entityId)) return "—";
+  if (typeof value !== "string" || !value.includes(item.entityId)) return "";
   return value;
 }

@@ -12,8 +12,11 @@ import {
   PLACE_TIMEOUT_MS,
   PLACE_USE_ANCHORS,
   BRIDGE_VARIANT,
+  confidenceForSharedTags,
+  type SharedConfidence,
 } from "@/lib/pipeline/config";
 import { countSharedTags, type AnchorCandidate, type RankedAnchor } from "@/lib/pipeline/anchors";
+import { dedupeTags, TAG_PREVIEW_LIMIT } from "@/lib/pipeline/tags";
 import {
   chooseBridgeAnchors,
   composeNarratives,
@@ -130,11 +133,13 @@ function tagNames(raw: unknown): string[] {
   if (!raw || typeof raw !== "object") return [];
   const tags = (raw as { tags?: unknown }).tags;
   if (!Array.isArray(tags)) return [];
-  return tags.flatMap((tag) => {
-    if (!tag || typeof tag !== "object") return [];
-    const name = (tag as { name?: unknown }).name;
-    return typeof name === "string" && name.trim() ? [name.trim()] : [];
-  });
+  return dedupeTags(
+    tags.flatMap((tag) => {
+      if (!tag || typeof tag !== "object") return [];
+      const name = (tag as { name?: unknown }).name;
+      return typeof name === "string" && name.trim() ? [name.trim()] : [];
+    }),
+  );
 }
 
 /**
@@ -319,9 +324,10 @@ export async function runPipeline(
     );
   }
   const anchorSlots = anchorsBySlot(anchorChoice.evidence);
+  const anchorTagSets = anchorTagsBySlot(roots, anchorChoice.evidence);
   const rootItems = cardsToItems(roots, 0, anchorTags, new Set());
   const rootIds = new Set(rootItems.map((item) => item.entityId));
-  const bridgeItems = cardsToItems(bridge, 1, anchorTags, rootIds, anchorSlots);
+  const bridgeItems = cardsToItems(bridge, 1, anchorTags, rootIds, anchorSlots, anchorTagSets);
   const assembled = assemblePack({
     sessionId,
     city: session.city,
@@ -604,23 +610,62 @@ async function fetchSlot(
   return { cards: (await load(undefined)).filter(validNamedHit) };
 }
 
-function cardsToItems(
+/** Distinct tags present in both lists, keeping the order of `tags`. */
+function overlappingTags(tags: readonly string[], reference: readonly string[]): string[] {
+  const wanted = new Set(reference.map((tag) => tag.trim().toLowerCase()));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const tag of tags) {
+    const key = tag.trim().toLowerCase();
+    if (!wanted.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+  }
+  return out;
+}
+
+const CONFIDENCE_ORDER: Record<SharedConfidence, number> = { low: 0, medium: 1, high: 2 };
+
+function weakerConfidence(left: SharedConfidence, right: SharedConfidence): SharedConfidence {
+  return CONFIDENCE_ORDER[left] <= CONFIDENCE_ORDER[right] ? left : right;
+}
+
+/**
+ * Every card stores its own distinct tags; the display cap lives in the UI so the
+ * "+N more" control can expand what was already paid for. City-chosen places carry no
+ * shared-tag or anchor evidence at all: nothing about them came from the anchors.
+ */
+export function cardsToItems(
   slots: Map<PackSlot, Card[]>,
   hop: 0 | 1,
-  anchorTags: Set<string>,
+  seedTags: Set<string>,
   blocked: Set<string>,
   anchorBySlot?: Map<string, RankedAnchor>,
+  anchorTagSets?: Map<string, string[]>,
 ) {
   const items = [];
   for (const slot of PACK_SLOTS) {
     const cards = slots.get(slot) ?? [];
     const card = cards.find((item) => item.entityId.trim() && item.name.trim() && !blocked.has(item.entityId));
     if (!card) continue;
-    const shared = card.tags.filter((tag) => anchorTags.has(tag.toLowerCase())).slice(0, 8);
     const cityChosen = Boolean(card.chosenByCity);
-    const anchor = hop === 1 ? anchorBySlot?.get(slot) : undefined;
-    const ownConfidence = cityChosen ? "medium" : shared.length > 0 ? "high" : card.tags.length > 0 ? "medium" : "unverified";
-    const confidence = anchor?.confidence === "low" ? "low" : ownConfidence;
+    const anchor = hop === 1 && !cityChosen ? anchorBySlot?.get(slot) : undefined;
+    const anchorCardTags = anchor ? anchorTagSets?.get(slot) : undefined;
+    const anchorOverlap = anchorCardTags ? overlappingTags(card.tags, anchorCardTags) : [];
+
+    let confidence: "high" | "medium" | "low" | "unverified";
+    if (cityChosen) {
+      confidence = "medium";
+    } else if (anchor) {
+      // The Bridge card is measured against the anchor that produced it, and it can
+      // never claim more than that anchor's own strength.
+      confidence = weakerConfidence(confidenceForSharedTags(anchorOverlap.length), anchor.confidence);
+    } else if (card.tags.length === 0) {
+      confidence = "unverified";
+    } else {
+      confidence = confidenceForSharedTags(countSharedTags(card.tags, seedTags));
+    }
+
     items.push({
       slot,
       entityId: card.entityId,
@@ -629,26 +674,35 @@ function cardsToItems(
       hop,
       imageUrl: card.imageUrl,
       affinity: card.affinity,
-      explain: { en: card.tags.slice(0, 8).join(", ") || "—", es: card.tags.slice(0, 8).join(", ") || "—" },
+      explain: {
+        en: card.tags.slice(0, TAG_PREVIEW_LIMIT).join(", "),
+        es: card.tags.slice(0, TAG_PREVIEW_LIMIT).join(", "),
+      },
       confidence,
       provenance: "qloo" as const,
       evidence: {
-        hitTags: card.tags.slice(0, 8),
-        sharedTags: shared,
-        sharedTagCount: countSharedTags(card.tags, anchorTags),
+        hitTags: card.tags,
+        ...(cityChosen
+          ? { chosenByCity: true }
+          : {
+              sharedTags: overlappingTags(card.tags, [...seedTags]),
+              sharedTagCount: countSharedTags(card.tags, seedTags),
+              ...(anchor
+                ? {
+                    anchor: {
+                      id: anchor.id,
+                      name: anchor.name,
+                      slot: anchor.slot,
+                      // Exactly the tags that produced the item's confidence.
+                      sharedTags: anchorOverlap,
+                      sharedTagCount: anchorOverlap.length,
+                      confidence: confidenceForSharedTags(anchorOverlap.length),
+                      anchorConfidence: anchor.confidence,
+                    },
+                  }
+                : {}),
+            }),
         ...(card.explainability ? { explainability: card.explainability } : {}),
-        ...(cityChosen ? { chosenByCity: true } : {}),
-        ...(anchor
-          ? {
-              anchor: {
-                id: anchor.id,
-                slot: anchor.slot,
-                sharedTags: anchor.sharedTags,
-                sharedTagCount: anchor.sharedTagCount,
-                confidence: anchor.confidence,
-              },
-            }
-          : {}),
       },
     });
   }
@@ -666,6 +720,32 @@ function anchorCandidates(slots: Map<PackSlot, Card[]>): AnchorCandidate[] {
 
 function anchorsBySlot(evidence: RankedAnchor[]): Map<string, RankedAnchor> {
   return new Map(evidence.map((anchor) => [anchor.slot, anchor]));
+}
+
+/** The tags of the card each anchor was taken from, keyed by slot. */
+function anchorTagsBySlot(
+  roots: Map<PackSlot, Card[]>,
+  evidence: RankedAnchor[],
+): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const anchor of evidence) {
+    const card = (roots.get(anchor.slot) ?? []).find((entry) => entry.entityId === anchor.id);
+    if (card) out.set(anchor.slot, card.tags);
+  }
+  return out;
+}
+
+/** Same, for the refine path, where Roots is already stored rather than in memory. */
+function anchorTagsBySlotFromStored(
+  stored: { slot: string; qlooEntityId: string; evidence: unknown }[],
+  evidence: RankedAnchor[],
+): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const anchor of evidence) {
+    const row = stored.find((entry) => entry.slot === anchor.slot && entry.qlooEntityId === anchor.id);
+    if (row) out.set(anchor.slot, evidenceTags(row.evidence));
+  }
+  return out;
 }
 
 /** The pack's own names, by slot, so the LLM never has to spell one. */
@@ -1274,8 +1354,9 @@ export async function refineBridge(
   emit({ step: "assemble", status: "active" });
   const rootIds = new Set(root.items.map((item) => item.qlooEntityId));
   const anchorSlots = anchorsBySlot(anchorChoice.evidence);
+  const anchorTagSets = anchorTagsBySlotFromStored(root.items, anchorChoice.evidence);
   const bridgeItems = qlooApiKey()
-    ? cardsToItems(bridgeSlots, 1, seedTags, rootIds, anchorSlots)
+    ? cardsToItems(bridgeSlots, 1, seedTags, rootIds, anchorSlots, anchorTagSets)
     : storedItems(bridgeRow.items);
   const assembled = assemblePack({
     sessionId,

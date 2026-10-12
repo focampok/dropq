@@ -57,6 +57,56 @@ export const PLACE_USE_ANCHORS = false;
 export const DO_EXCLUDE_TAG_KEYWORDS = ["hotel", "lodging", "resort", "motel", "inn", "suites"] as const;
 
 /**
+ * One confidence rule for every card that has a reference set: the number of
+ * *distinct* shared tags. Roots items are measured against the seed anchors; Bridge
+ * items against the anchor that produced them (their own confidence is capped by it).
+ * The label is never a claim about how good the pick is beyond that overlap.
+ */
+export const CONFIDENCE_SHARED_HIGH_MIN = 3;
+export const CONFIDENCE_SHARED_MEDIUM_MIN = 2;
+
+export type SharedConfidence = "high" | "medium" | "low";
+
+export function confidenceForSharedTags(distinctShared: number): SharedConfidence {
+  if (distinctShared >= CONFIDENCE_SHARED_HIGH_MIN) return "high";
+  if (distinctShared >= CONFIDENCE_SHARED_MEDIUM_MIN) return "medium";
+  return "low";
+}
+
+/**
+ * The `wear` slot must return something a person can actually put on. Each keyword is
+ * matched as a whole word against a candidate's tags, so "app" never matches "apparel"
+ * (verified by test). Applied client-side to the list Qloo already returned: no extra call.
+ */
+export const WEAR_EXCLUDE_TAG_KEYWORDS = [
+  "mobile app",
+  "app",
+  "software",
+  "video game",
+  "gaming",
+  "console",
+  "beverage",
+  "soft drink",
+  "snack",
+  "food",
+  "restaurant",
+  "delivery",
+  "streaming",
+  "insurance",
+  "bank",
+  "airline",
+  "hotel",
+  "telecom",
+] as const;
+
+/**
+ * A candidate whose name carries a seed's name is the seed's own family, not a
+ * discovery: "Nike Training Club" for the seed "Nike". Shorter seed names are ignored
+ * so a three-letter fragment cannot match by accident.
+ */
+export const SEED_FAMILY_MIN_NAME_LENGTH = 3;
+
+/**
  * R8 cap 0.9 differed from variant a in 10 of 10 artist ids and 10 of 10 brand ids.
  * 0.8 and 0.6 also differed, and 0.9 is the highest cap that clears that bar for two types.
  */

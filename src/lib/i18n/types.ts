@@ -15,6 +15,10 @@ export type StepId = (typeof STEP_IDS)[number];
 
 export type SlotName = "watch" | "listen" | "wear" | "do";
 
+/** Qloo entity types the UI names in words instead of showing the raw URN. */
+export const ENTITY_TYPE_KEYS = ["tv_show", "movie", "artist", "brand", "place", "unknown"] as const;
+export type EntityTypeKey = (typeof ENTITY_TYPE_KEYS)[number];
+
 export type Dictionary = {
   meta: { title: string; description: string };
   brand: string;
@@ -51,7 +55,6 @@ export type Dictionary = {
     entityId: string;
     hop: string;
     affinity: string;
-    noAffinity: string;
     confidence: string;
     noImage: string;
     pending: string;
@@ -71,6 +74,12 @@ export type Dictionary = {
     explainability: string;
     anchorEvidence: string;
     weakSignal: string;
+    moreTags: string;
+    lessTags: string;
+    fromAnchors: string;
+    viaAnchor: string;
+    chosenForCityEvidence: string;
+    entityTypes: Record<EntityTypeKey, string>;
     headline: string;
     narrativeEmpty: string;
     narrativeTemplate: string;

@@ -2,8 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import { anchorsForRule, deterministicAnchors, validAnchorIds } from "@/lib/pipeline/anchors";
 import { substituteTokens, tokensIn, validateNarrative } from "@/lib/pipeline/llm";
 import { DEMO_PRESETS } from "@/lib/presets";
-import { BRIDGE_ANCHOR_RULE, PINNED_PRESETS, PLACE_RADIUS_FALLBACK_M } from "@/lib/pipeline/config";
-import { packsToWrite } from "@/lib/pipeline/run";
+import {
+  BRIDGE_ANCHOR_RULE,
+  PINNED_PRESETS,
+  PLACE_RADIUS_FALLBACK_M,
+  confidenceForSharedTags,
+} from "@/lib/pipeline/config";
+import { cardsToItems, packsToWrite } from "@/lib/pipeline/run";
 import { insightArgs, loadPlaceHits, loadWatchHits, locationKey } from "@/lib/pipeline/requests";
 import { assemblePack } from "@/lib/pack/assemble";
 import { runIndependent } from "@/lib/pipeline/settle";
@@ -361,5 +366,115 @@ describe("bridge anchor rule B", () => {
     const pool = [weakWatch, listen, wear];
     expect(anchorsForRule(pool, new Set())).toEqual(anchorsForRule(pool, new Set(), BRIDGE_ANCHOR_RULE));
     expect(anchorsForRule(pool, new Set(), "A")).not.toEqual(anchorsForRule(pool, new Set(), "B"));
+  });
+});
+
+describe("evidence panel and the one confidence rule", () => {
+  const makeCard = (
+    slot: "watch" | "listen" | "wear" | "do",
+    entityId: string,
+    name: string,
+    tags: string[],
+    extra: { chosenByCity?: boolean } = {},
+  ) => ({
+    slot,
+    entityId,
+    name,
+    type: slot === "do" ? "urn:entity:place" : "urn:entity:artist",
+    tags,
+    imageUrl: null,
+    affinity: null,
+    explainability: null,
+    ...extra,
+  });
+  const anchor = (name: string, confidence: "high" | "medium" | "low") => ({
+    id: `anchor-${name}`,
+    name,
+    slot: "watch" as const,
+    sharedTags: [],
+    sharedTagCount: 0,
+    confidence,
+  });
+
+  it("computes confidence from distinct shared tags, not from any overlap at all", () => {
+    expect(confidenceForSharedTags(0)).toBe("low");
+    expect(confidenceForSharedTags(1)).toBe("low");
+    expect(confidenceForSharedTags(2)).toBe("medium");
+    expect(confidenceForSharedTags(3)).toBe("high");
+  });
+
+  it("gives a city-chosen place no shared-tag and no anchor evidence", () => {
+    const slots = new Map([
+      [
+        "do" as const,
+        [makeCard("do", "hall", "Hall", ["Live music"], { chosenByCity: true })],
+      ],
+    ]);
+    const [item] = cardsToItems(slots, 0, new Set(["live music"]), new Set());
+    expect(item?.confidence).toBe("medium");
+    expect(item?.evidence).toEqual({ hitTags: ["Live music"], chosenByCity: true });
+    const evidence = item?.evidence as { sharedTags?: unknown; anchor?: unknown };
+    expect(evidence.sharedTags).toBeUndefined();
+    expect(evidence.anchor).toBeUndefined();
+  });
+
+  it("audits a Roots pick that only shares one tag down to low", () => {
+    const slots = new Map([
+      ["watch" as const, [makeCard("watch", "colin", "Colin in Black & White", ["Basketball", "Sport"])]],
+    ]);
+    const [item] = cardsToItems(slots, 0, new Set(["basketball", "sport"]), new Set());
+    // Two distinct shared tags is medium, never the "high" an any-overlap rule gave it.
+    expect(item?.confidence).toBe("medium");
+
+    const one = cardsToItems(
+      new Map([["watch" as const, [makeCard("watch", "wu", "Wu-Tang: An American Saga", ["Rapper"])]]]),
+      0,
+      new Set(["rapper"]),
+      new Set(),
+    );
+    expect(one[0]?.confidence).toBe("low");
+  });
+
+  it("measures a Bridge card against its anchor and never above that anchor", () => {
+    const slots = new Map([
+      ["watch" as const, [makeCard("watch", "bridge", "Bridge Show", ["Basketball", "Sport", "Drama"])]],
+    ]);
+    const strong = new Map([["watch", anchor("Root Show", "high")]]);
+    const tagSets = new Map([["watch", ["Basketball", "Sport", "Drama", "News"]]]);
+    const [item] = cardsToItems(
+      slots,
+      1,
+      new Set(["drama"]),
+      new Set(),
+      strong,
+      tagSets,
+    );
+    expect(item?.confidence).toBe("high");
+    expect((item?.evidence as { anchor?: unknown } | undefined)?.anchor).toEqual({
+      id: "anchor-Root Show",
+      name: "Root Show",
+      slot: "watch",
+      sharedTags: ["Basketball", "Sport", "Drama"],
+      sharedTagCount: 3,
+      confidence: "high",
+      anchorConfidence: "high",
+    });
+
+    // The anchor is weak, so the card cannot be stronger than it.
+    const weak = new Map([["watch", anchor("Root Show", "low")]]);
+    const [capped] = cardsToItems(slots, 1, new Set(), new Set(), weak, tagSets);
+    expect(capped?.confidence).toBe("low");
+  });
+
+  it("counts a repeated tag once when it decides confidence", () => {
+    const slots = new Map([
+      ["listen" as const, [makeCard("listen", "balvin", "J Balvin", ["Energetic", "Energetic", "Energetic", "Reggaeton"])]],
+    ]);
+    const anchors = new Map([["listen", { ...anchor("Root Artist", "high"), slot: "listen" as const }]]);
+    const tagSets = new Map([["listen", ["Energetic"]]]);
+    const [item] = cardsToItems(slots, 1, new Set(), new Set(), anchors, tagSets);
+    const evidence = item?.evidence as { anchor?: { sharedTagCount?: number } } | undefined;
+    expect(evidence?.anchor?.sharedTagCount).toBe(1);
+    expect(item?.confidence).toBe("low");
   });
 });

@@ -134,6 +134,32 @@ async function measure(page: Page, name: string, width: number, errors: string[]
   };
 }
 
+/**
+ * The narration and the AI badge must be separate elements: inside one text node the
+ * badge renders glued to the last word ("Karol G.IA"). Only checked when the LLM
+ * narrated something; without a badge there is nothing that could glue.
+ */
+async function badgeReport(page: Page): Promise<{
+  present: boolean;
+  separated: boolean;
+  glued: boolean;
+}> {
+  return page.evaluate(() => {
+    const badge = document.querySelector("[data-ai-badge]");
+    if (!badge) return { present: false, separated: true, glued: false };
+    const text = document.querySelector("[data-narrative-text]");
+    if (!text) return { present: true, separated: false, glued: true };
+    const narration = text.textContent ?? "";
+    const badgeText = badge.textContent?.trim() ?? "";
+    return {
+      present: true,
+      separated: text !== badge && !text.contains(badge) && !badge.contains(text),
+      // A badge whose own text is already inside the narration is one glued string.
+      glued: badgeText.length > 0 && narration.includes(badgeText),
+    };
+  });
+}
+
 async function loadPreset(page: Page, presetLabel: string): Promise<number> {
   const started = Date.now();
   await page.getByRole("button", { name: presetLabel, exact: true }).click();
@@ -239,6 +265,14 @@ async function main(): Promise<void> {
         if (probe.overflowing) failures.push(`${preset.id} overflows at ${width}px`);
       }
 
+
+      const badge = await badgeReport(page);
+      console.log(
+        `  AI badge: ${badge.present ? "shown" : "not shown"}; narration and badge separate: ${badge.separated ? "yes" : "no"}`,
+      );
+      if (badge.present && (!badge.separated || badge.glued)) {
+        failures.push(`${preset.id} AI badge is glued to the narration text`);
+      }
 
       // EN -> ES -> EN, so the next preset starts from a clean language state.
       await page.setViewportSize({ width: 1280, height: 900 });

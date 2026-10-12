@@ -17,6 +17,7 @@ import { countSharedTags, type AnchorCandidate, type RankedAnchor } from "@/lib/
 import {
   chooseBridgeAnchors,
   composeNarratives,
+  offReasonWithQuota,
   templateNarrative,
   type AnchorChoice,
   type AnchorSource,
@@ -341,7 +342,8 @@ export async function runPipeline(
     ),
   );
   const templates = new Map(planInputs.map((plan) => [plan.label, templateFor(plan, locale)]));
-  const { provider, offReason } = llmStatus();
+  const { provider, offReason: statusOff } = llmStatus();
+  const offReason = offReasonWithQuota(statusOff, llmFailures);
   // The pack ships with the template narrative so first paint never waits on the LLM.
   const packIds = await persist(
     sessionId,
@@ -367,16 +369,17 @@ export async function runPipeline(
 
   emit({ step: "narrate", status: "active" });
   const narration = signal?.aborted
-    ? { plans: [...templates.values()], failures: [] as LlmFailure[], ms: 0, trace: null }
+    ? { plans: [...templates.values()], failures: [] as LlmFailure[], ms: 0, trace: null, offReason }
     : await composeNarratives({ locale, plans: planInputs });
   llmMs += narration.ms;
   llmFailures.push(...narration.failures);
+  const narrateOff = offReasonWithQuota(narration.offReason ?? offReason, llmFailures);
   // Write whenever there is something new to record: the LLM text itself, or the
   // failure codes that explain why the template stayed.
   if (narration.plans.some((plan) => plan.source === "llm") || narration.failures.length > 0) {
     await writeNarratives(sessionId, narration.plans, {
       provider,
-      offReason,
+      offReason: narrateOff,
       anchors: anchorChoice.source,
       anchorSource: anchorChoice.anchorSource,
       failures: llmFailures,
@@ -1294,9 +1297,10 @@ export async function refineBridge(
   const llmFailures: LlmFailure[] = [
     ...(anchorChoice.failure ? [anchorChoice.failure] : []),
   ];
+  const bridgeOff = offReasonWithQuota(offReason, llmFailures);
   const extras: PlanCoverageExtras = {
     provider,
-    offReason,
+    offReason: bridgeOff,
     anchors: anchorChoice.source,
     anchorSource: anchorChoice.anchorSource,
     failures: llmFailures,
@@ -1318,12 +1322,14 @@ export async function refineBridge(
   const narration = await composeNarratives({ locale, plans: [plan], scope: "bridge" });
   const produced = narration.plans[0]!;
   llmFailures.push(...narration.failures);
-  if (produced.source === "llm") {
+  const narrateOff = offReasonWithQuota(narration.offReason ?? bridgeOff, llmFailures);
+  if (produced.source === "llm" || narration.failures.length > 0) {
     await writeBridge(
       bridgeRow.id,
       produced.text,
         coverageWithSnapshots(previous, assembled.coverage, mode, serializeBridgeItems(replacement.items, locale), {
         ...extras,
+        offReason: narrateOff,
         failures: llmFailures,
         narrativeTrace: narration.trace,
         narratives: { B: produced },

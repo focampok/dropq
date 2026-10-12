@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GeminiChain,
   GeminiDeadlineError,
+  GeminiQuotaError,
+  classifyRateLimit,
   envNumber,
   geminiFailureCode,
   isTransient,
+  nextPacificMidnightMs,
   readGeminiConfig,
   resetGeminiCallCount,
   type ChainCall,
@@ -117,7 +120,7 @@ describe("gemini fallback loop", () => {
     expect(geminiFailureCode(http(403))).toBe("auth");
   });
 
-  it("backs off 1000, 2000, 4000, 8000, 8000 and rotates the preferred index before sleeping", async () => {
+  it("backs off 1000, 2000, 4000, 8000, 8000 on transient 5xx and rotates before sleeping", async () => {
     const sleeps: number[] = [];
     const preferredAtSleep: number[] = [];
     const hooked = new GeminiChain(config(), {
@@ -127,14 +130,156 @@ describe("gemini fallback loop", () => {
       },
     });
     await expect(hooked.generate(10 * 60_000, async () => {
-      throw http(429, "slow down");
-    })).rejects.toMatchObject({ statusCode: 429 });
+      throw http(503, "overloaded");
+    })).rejects.toMatchObject({ statusCode: 503 });
     expect(sleeps.slice(0, 5)).toEqual([1000, 2000, 4000, 8000, 8000]);
     expect(sleeps).toHaveLength(9);
     expect(preferredAtSleep[0]).toBe(1);
     expect(geminiFailureCode(http(429))).toBe("rate_limited");
     expect(isTransient(http(500))).toBe(true);
     expect(isTransient(http(400, "bad"))).toBe(false);
+  });
+
+  it("puts a per-day 429 model in cooldown until Pacific midnight and skips it with no sleep", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-12T18:00:00.000Z"));
+    const sleeps: number[] = [];
+    let now = Date.now();
+    const chain = new GeminiChain(config(["principal", "fallback-a"]), {
+      now: () => now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+    });
+    const perDay = Object.assign(new Error("Resource exhausted"), {
+      statusCode: 429,
+      data: { error: { details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", metadata: { quota_metric: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" } }] } },
+    });
+    await expect(
+      chain.generate(60_000, async ({ modelId }) => {
+        if (modelId === "principal") throw perDay;
+        return "ok";
+      }),
+    ).resolves.toMatchObject({ value: "ok" });
+    expect(sleeps).toEqual([]);
+    expect(classifyRateLimit(perDay).kind).toBe("per_day");
+
+    const seen: string[] = [];
+    const reset = nextPacificMidnightMs(now);
+    await expect(
+      chain.generate(60_000, async ({ modelId }) => {
+        seen.push(modelId);
+        return modelId;
+      }),
+    ).resolves.toMatchObject({ value: "fallback-a" });
+    expect(seen).toEqual(["fallback-a"]);
+    expect(sleeps).toEqual([]);
+
+    now = reset;
+    expect(chain.quotaBlocked()).toBeNull();
+    chain.modeloPreferidoIdx = 0;
+    const after: string[] = [];
+    await chain.generate(60_000, async ({ modelId }) => {
+      after.push(modelId);
+      return modelId;
+    });
+    expect(after[0]).toBe("principal");
+    vi.useRealTimers();
+  });
+
+  it("uses the suggested retry delay for a per-minute 429 cooldown", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-12T18:00:00.000Z"));
+    let now = Date.now();
+    const sleeps: number[] = [];
+    const chain = new GeminiChain(config(["only"]), {
+      now: () => now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+    });
+    const perMinute = Object.assign(new Error("Resource exhausted"), {
+      statusCode: 429,
+      data: { error: { details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "45s" }] } },
+    });
+    await expect(chain.generate(60_000, async () => {
+      throw perMinute;
+    })).rejects.toBeInstanceOf(GeminiQuotaError);
+    expect(sleeps).toEqual([]);
+    expect(geminiFailureCode(new GeminiQuotaError("per_minute"))).toBe("quota_minute");
+    expect(chain.quotaBlocked()).toBe("per_minute");
+
+    const skipped: string[] = [];
+    await expect(
+      chain.generate(60_000, async ({ modelId }) => {
+        skipped.push(modelId);
+        return "nope";
+      }),
+    ).rejects.toBeInstanceOf(GeminiQuotaError);
+    expect(skipped).toEqual([]);
+    expect(sleeps).toEqual([]);
+
+    now += 45_000;
+    expect(chain.quotaBlocked()).toBeNull();
+    await expect(chain.generate(60_000, async () => "ok")).resolves.toMatchObject({ value: "ok" });
+    vi.useRealTimers();
+  });
+
+  it("returns immediate quota fallback when every model is in cooldown", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-12T18:00:00.000Z"));
+    let now = Date.now();
+    const sleeps: number[] = [];
+    const chain = new GeminiChain(config(), {
+      now: () => now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+    });
+    const bodySnippet = "GenerateRequestsPerDayPerProjectPerModel-FreeTier";
+    await expect(
+      chain.generate(60_000, async () => {
+        throw Object.assign(new Error("quota"), {
+          statusCode: 429,
+          responseBody: bodySnippet,
+        });
+      }),
+    ).rejects.toMatchObject({ name: "GeminiQuotaError", message: "quota_daily" });
+    expect(sleeps).toEqual([]);
+    expect(chain.quotaBlocked()).toBe("per_day");
+
+    const attempts: string[] = [];
+    await expect(
+      chain.generate(60_000, async ({ modelId }) => {
+        attempts.push(modelId);
+        return "x";
+      }),
+    ).rejects.toMatchObject({ message: "quota_daily" });
+    expect(attempts).toEqual([]);
+    // Coverage / logs must never contain the response body text.
+    expect(JSON.stringify({ failures: ["quota_daily"], off: "quota" })).not.toContain(bodySnippet);
+    vi.useRealTimers();
+  });
+
+  it("does not start a sleep that would end after the deadline on transient 5xx", async () => {
+    let now = 0;
+    const sleeps: number[] = [];
+    const chain = new GeminiChain(config(["only"]), {
+      now: () => now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+    });
+    await expect(
+      chain.generate(1500, async () => {
+        throw http(503);
+      }),
+    ).rejects.toMatchObject({ statusCode: 503 });
+    expect(sleeps).toEqual([1000]);
   });
 
   it("stops when every model is discarded and throws the last error", async () => {
@@ -164,24 +309,6 @@ describe("gemini fallback loop", () => {
     });
     expect(first).toEqual(["principal", "fallback-a"]);
     expect(second).toEqual(["fallback-a"]);
-  });
-
-  it("does not start a sleep that would end after the deadline", async () => {
-    let now = 0;
-    const sleeps: number[] = [];
-    const chain = new GeminiChain(config(["only"]), {
-      now: () => now,
-      sleep: async (ms) => {
-        sleeps.push(ms);
-        now += ms;
-      },
-    });
-    await expect(
-      chain.generate(1500, async () => {
-        throw http(429);
-      }),
-    ).rejects.toMatchObject({ statusCode: 429 });
-    expect(sleeps).toEqual([1000]);
   });
 
   it("aborts a hung attempt at the deadline and treats that abort as transient", async () => {

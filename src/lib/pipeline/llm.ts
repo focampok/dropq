@@ -6,6 +6,7 @@ import {
   GEMINI_THINKING_LEVEL,
   GeminiChain,
   GeminiDeadlineError,
+  GeminiQuotaError,
   geminiFailureCode,
   mergeTrace,
   noteGeminiCall,
@@ -94,6 +95,8 @@ export type LlmFailure =
   | "no_token"
   | "empty"
   | "rate_limited"
+  | "quota_daily"
+  | "quota_minute"
   | "model_unavailable"
   | "auth"
   | "server_error"
@@ -167,6 +170,7 @@ function withTimeout<T>(ms: number, work: (signal: AbortSignal) => Promise<T>): 
 
 function failureClass(error: unknown): LlmFailure {
   if (error instanceof GeminiDeadlineError) return "deadline";
+  if (error instanceof GeminiQuotaError) return error.kind === "per_day" ? "quota_daily" : "quota_minute";
   if (error instanceof Error && error.message === TIMEOUT_CODE) return "timeout";
   const gemini = geminiFailureCode(error);
   if (gemini) return gemini;
@@ -178,6 +182,16 @@ function failureClass(error: unknown): LlmFailure {
   return "request";
 }
 
+export function isQuotaFailure(code: LlmFailure | undefined | null): boolean {
+  return code === "quota_daily" || code === "quota_minute";
+}
+
+/** Prefer `"quota"` when the chain exhausted daily/minute cooldowns. */
+export function offReasonWithQuota(base: string | null, failures: readonly LlmFailure[]): string | null {
+  if (failures.some(isQuotaFailure)) return "quota";
+  return base;
+}
+
 let googleChain: GeminiChain | null = null;
 
 function googleTransport(): GeminiChain | null {
@@ -185,6 +199,16 @@ function googleTransport(): GeminiChain | null {
   if (!read.ok) return null;
   if (!googleChain) googleChain = new GeminiChain(read.config);
   return googleChain;
+}
+
+/** Process-wide Gemini chain cooldown: `"per_day"` / `"per_minute"` or null. */
+export function geminiQuotaBlocked(): "per_day" | "per_minute" | null {
+  return googleTransport()?.quotaBlocked() ?? null;
+}
+
+/** Test helper: drop the process-wide chain so the next call rebuilds it. */
+export function resetGoogleTransportForTests(): void {
+  googleChain = null;
 }
 
 /** Every validated call goes through generateObject; nothing free-text is parsed later. */
@@ -295,6 +319,14 @@ export async function chooseBridgeAnchors(
     ms: 0,
   });
   if (!llmConfigured() || !llmHourlyAllowed() || closed.length < 2) return fallback();
+  const blocked = geminiQuotaBlocked();
+  if (blocked) {
+    return {
+      ...fallback(),
+      failure: blocked === "per_day" ? "quota_daily" : "quota_minute",
+      ms: 0,
+    };
+  }
   const started = Date.now();
   try {
     const structured = await readStructured(anchorPrompt(closed), anchorSchema, ANCHOR_TIMEOUT_MS, {
@@ -520,6 +552,17 @@ export async function composeNarratives(input: {
       ms: 0,
     };
   }
+  const blocked = state.provider === "google" ? geminiQuotaBlocked() : null;
+  if (blocked) {
+    const code: LlmFailure = blocked === "per_day" ? "quota_daily" : "quota_minute";
+    return {
+      plans: [...templates.values()],
+      provider: state.provider,
+      offReason: "quota",
+      failures: [code],
+      ms: 0,
+    };
+  }
   const started = Date.now();
   const fields = scope === "bridge" ? (["bridge"] as const) : (["roots", "bridge"] as const);
   let trace: LlmCallTrace | null = null;
@@ -577,7 +620,14 @@ export async function composeNarratives(input: {
     const llm = typeof result === "string" ? undefined : result.get(plan.label);
     return llm ?? templates.get(plan.label)!;
   });
-  return { plans, provider: state.provider, offReason, failures, ms: Date.now() - started, trace };
+  return {
+    plans,
+    provider: state.provider,
+    offReason: offReasonWithQuota(offReason, failures),
+    failures,
+    ms: Date.now() - started,
+    trace,
+  };
 }
 
 export type NarrationProbe = {

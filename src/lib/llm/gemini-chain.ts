@@ -17,6 +17,11 @@ export const GEMINI_THINKING_LEVEL = "minimal" as const;
 
 export type GeminiOff = "no_key" | "no_model";
 
+/** Gemini free-tier daily quotas reset at midnight America/Los_Angeles. */
+export const GEMINI_DAILY_QUOTA_TZ = "America/Los_Angeles";
+
+export type RateLimitKind = "per_day" | "per_minute" | "unknown";
+
 export type GeminiConfig = {
   apiKey: string;
   models: string[];
@@ -88,6 +93,80 @@ export class GeminiBudgetError extends Error {
   }
 }
 
+/** Every model in the chain is in a quota cooldown; callers fall back immediately. */
+export class GeminiQuotaError extends Error {
+  readonly kind: "per_day" | "per_minute";
+  constructor(kind: "per_day" | "per_minute") {
+    super(kind === "per_day" ? "quota_daily" : "quota_minute");
+    this.name = "GeminiQuotaError";
+    this.kind = kind;
+  }
+}
+
+const PER_MINUTE_DEFAULT_MS = 60_000;
+const PER_MINUTE_CAP_MS = 10 * 60_000;
+
+/**
+ * Inspect a 429 in memory only. Never log the body: callers may read the
+ * returned kind and delay, nothing else.
+ */
+export function classifyRateLimit(error: unknown): { kind: RateLimitKind; retryDelayMs: number | null } {
+  const blobs: string[] = [];
+  const push = (value: unknown) => {
+    if (typeof value === "string") blobs.push(value);
+    else if (value && typeof value === "object") {
+      try {
+        blobs.push(JSON.stringify(value));
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+  if (error instanceof Error) push(error.message);
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    for (const key of ["data", "responseBody", "cause", "message", "url"]) push(record[key]);
+  }
+  const joined = blobs.join("\n");
+  const hasPerDay = /PerDay|per[\s_-]?day|GenerateRequestsPerDay|RequestsPerDay/i.test(joined);
+  let retryDelayMs: number | null = null;
+  const delayMatch = joined.match(/retryDelay["'\s:]*([0-9.]+)s/i);
+  const afterMatch = joined.match(/retry[_-]?after["'\s:]*([0-9.]+)/i);
+  if (delayMatch) retryDelayMs = Math.round(Number(delayMatch[1]) * 1000);
+  else if (afterMatch) {
+    const raw = Number(afterMatch[1]);
+    retryDelayMs = Math.round(raw > 1000 ? raw : raw * 1000);
+  }
+  if (hasPerDay) return { kind: "per_day", retryDelayMs };
+  if (retryDelayMs != null) return { kind: "per_minute", retryDelayMs };
+  return { kind: "unknown", retryDelayMs: null };
+}
+
+/** Next midnight in {@link GEMINI_DAILY_QUOTA_TZ}, as a UTC epoch ms. */
+export function nextPacificMidnightMs(nowMs: number): number {
+  const dayFmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: GEMINI_DAILY_QUOTA_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const today = dayFmt.format(new Date(nowMs));
+  let lo = nowMs;
+  let hi = nowMs + 36 * 3600_000;
+  while (hi - lo > 250) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (dayFmt.format(new Date(mid)) === today) lo = mid;
+    else hi = mid;
+  }
+  return hi;
+}
+
+function cooldownMsFor(kind: RateLimitKind, retryDelayMs: number | null, nowMs: number): number {
+  if (kind === "per_day") return Math.max(0, nextPacificMidnightMs(nowMs) - nowMs);
+  const suggested = retryDelayMs != null && Number.isFinite(retryDelayMs) ? retryDelayMs : PER_MINUTE_DEFAULT_MS;
+  return Math.min(Math.max(suggested, 0), PER_MINUTE_CAP_MS);
+}
+
 let geminiCalls = 0;
 
 export function geminiCallCount(): number {
@@ -139,7 +218,14 @@ export function isParseError(error: unknown): boolean {
 
 /** Transient: 429 and 5xx, no HTTP status, or a transport message. Everything else is permanent. */
 export function isTransient(error: unknown): boolean {
-  if (error instanceof GeminiDeadlineError || error instanceof GeminiBudgetError || isParseError(error)) return false;
+  if (
+    error instanceof GeminiDeadlineError ||
+    error instanceof GeminiBudgetError ||
+    error instanceof GeminiQuotaError ||
+    isParseError(error)
+  ) {
+    return false;
+  }
   const status = statusCodeOf(error);
   if (status != null) return TRANSIENT_HTTP_STATUS.has(status);
   if (isApiCallError(error)) return true;
@@ -157,6 +243,8 @@ export function isThinkingRejection(error: unknown): boolean {
 
 export type GeminiFailureCode =
   | "rate_limited"
+  | "quota_daily"
+  | "quota_minute"
   | "model_unavailable"
   | "auth"
   | "server_error"
@@ -165,6 +253,7 @@ export type GeminiFailureCode =
 
 export function geminiFailureCode(error: unknown): GeminiFailureCode | null {
   if (error instanceof GeminiDeadlineError) return "deadline";
+  if (error instanceof GeminiQuotaError) return error.kind === "per_day" ? "quota_daily" : "quota_minute";
   const status = statusCodeOf(error);
   if (status === 429) return "rate_limited";
   if (status === 404) return "model_unavailable";
@@ -213,10 +302,16 @@ export type ChainSuccess<T> = {
 /**
  * One chain per process. `modeloPreferidoIdx` sticks to the model that just
  * succeeded. Models are not cached: the caller builds one per attempt.
+ * Quota 429s put a model in an in-memory cooldown so the next call skips it
+ * immediately instead of burning the deadline on retries that cannot succeed.
  */
 export class GeminiChain {
   modeloPreferidoIdx = 0;
   private readonly thinkingOff = new Set<string>();
+  /** modelId → epoch ms when the cooldown ends. */
+  private readonly cooldownUntil = new Map<string, number>();
+  /** modelId → last classified quota kind that set the cooldown. */
+  private readonly cooldownKind = new Map<string, RateLimitKind>();
 
   constructor(
     readonly config: GeminiConfig,
@@ -230,6 +325,36 @@ export class GeminiChain {
   private sleep(ms: number): Promise<void> {
     if (this.hooks.sleep) return this.hooks.sleep(ms);
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /** True while every configured model is still in a quota cooldown. */
+  quotaBlocked(): "per_day" | "per_minute" | null {
+    const now = this.now();
+    const modelos = this.config.models;
+    if (modelos.length === 0) return null;
+    if (!modelos.every((id) => (this.cooldownUntil.get(id) ?? 0) > now)) return null;
+    return this.dominantCooldownKind(now);
+  }
+
+  private dominantCooldownKind(now: number): "per_day" | "per_minute" {
+    let anyDay = false;
+    for (const id of this.config.models) {
+      if ((this.cooldownUntil.get(id) ?? 0) > now && this.cooldownKind.get(id) === "per_day") anyDay = true;
+    }
+    return anyDay ? "per_day" : "per_minute";
+  }
+
+  private inCooldown(modelId: string, now: number): boolean {
+    return (this.cooldownUntil.get(modelId) ?? 0) > now;
+  }
+
+  private applyQuotaCooldown(modelId: string, error: unknown): RateLimitKind {
+    const { kind, retryDelayMs } = classifyRateLimit(error);
+    const now = this.now();
+    const ms = cooldownMsFor(kind, retryDelayMs, now);
+    this.cooldownUntil.set(modelId, now + ms);
+    this.cooldownKind.set(modelId, kind);
+    return kind;
   }
 
   async generate<T>(deadlineMs: number, run: (call: ChainCall) => Promise<T>): Promise<ChainSuccess<T>> {
@@ -257,11 +382,20 @@ export class GeminiChain {
       throw error;
     };
 
+    const blocked = this.quotaBlocked();
+    if (blocked) return fail(new GeminiQuotaError(blocked));
+
     const pick = (): number | null => {
       if (modelos.length === 0) return null;
+      const now = this.now();
       for (let step = 0; step < modelos.length; step += 1) {
         const idx = (this.modeloPreferidoIdx + step) % modelos.length;
-        if (!descartados.has(idx)) return idx;
+        if (descartados.has(idx)) continue;
+        if (this.inCooldown(modelos[idx]!, now)) {
+          descartados.add(idx);
+          continue;
+        }
+        return idx;
       }
       return null;
     };
@@ -269,7 +403,13 @@ export class GeminiChain {
     while (intentosGlobales < presupuesto) {
       if (this.now() >= deadlineAt) return fail(new GeminiDeadlineError(ultimoError));
       const idx = pick();
-      if (idx === null) break;
+      if (idx === null) {
+        // Only a quota exhaustion path: every model still in cooldown (not merely discarded).
+        if (modelos.every((id) => this.inCooldown(id, this.now()))) {
+          return fail(new GeminiQuotaError(this.dominantCooldownKind(this.now())));
+        }
+        break;
+      }
       const modelId = modelos[idx]!;
       const remaining = deadlineAt - this.now();
       const thinking = !this.thinkingOff.has(modelId);
@@ -296,6 +436,13 @@ export class GeminiChain {
           this.thinkingOff.add(modelId);
           continue;
         }
+        // Quota 429: set cooldown, discard for this call, skip immediately (no sleep).
+        if (statusCodeOf(error) === 429) {
+          this.applyQuotaCooldown(modelId, error);
+          descartados.add(idx);
+          this.modeloPreferidoIdx = nextLive(modelos.length, idx, descartados);
+          continue;
+        }
         if (!isTransient(error)) {
           descartados.add(idx);
           if (this.modeloPreferidoIdx === idx) {
@@ -312,6 +459,8 @@ export class GeminiChain {
         clearTimeout(timer);
       }
     }
+    const quotaKind = this.quotaBlocked();
+    if (quotaKind) return fail(new GeminiQuotaError(quotaKind));
     return fail(ultimoError);
   }
 }

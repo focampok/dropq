@@ -16,11 +16,40 @@ DropQ packs a night for an audience and a city the way a promoter would. Name a 
 | Call | Role |
 | --- | --- |
 | Search | Resolve seed text to entities (cached). |
-| Tags | Shared-tag evidence for Bridge anchors. |
+| Entities (`/entities?entity_ids=`) | The seeds' **reference tags** (cached 14 days). |
 | Insights + explainability | Fill slots; explainability is stored when present. |
 | Analysis | Supporting signals where the pipeline uses them. |
 
 Bridge anchors are chosen from a **closed list** ranked by shared tags (rule B); the LLM may only re-order that list. Measured limits we work within: about **5 requests/second**, **10 000 requests/month**, no reliable per-item affinity score, and many places without images.
+
+### Where shared tags come from
+
+Shared tags are measured between a card's own tags and a **reference set**. The reference set for the seed anchors is read from the documented entity lookup, not from search: `/search` answers with award and role tags for an artist ("Grammy Award Winners", "Actor"), while the lookup answers with the same entity's genre and mood tags ("Reggaeton", "Latin Trap", "Energetic") — the ones the insights hits carry. Reading the seeds from search left Bad Bunny and J Balvin sharing only "Energetic". Cards' own tags always come from the insights response. Tags are compared case-insensitively and de-duplicated, so a tag repeated across a hit counts once.
+
+### Confidence
+
+One rule, in `src/lib/pipeline/config.ts` and applied to every card that has a reference set — Roots items against the seed anchors, Bridge items against the anchor that produced them:
+
+| Distinct shared tags | Confidence |
+| --- | --- |
+| 3 or more | high |
+| 2 | medium |
+| 1 or none | low |
+
+A Bridge card can never claim more than its own anchor, and a place the city chose is always `medium` with no shared-tag row at all. A card with no tags is `unverified`.
+
+### Filters on the lists Qloo already returned
+
+Both are client-side, so neither costs a request:
+
+- **Seed family.** A candidate whose name contains a seed's name at a word boundary is the seed's own family, not a discovery — "Nike Training Club" for the seed "Nike". Seed names shorter than three characters are ignored.
+- **`wear`.** A candidate whose tags mark it as not wearable is dropped: `mobile app`, `app`, `software`, `video game`, `gaming`, `console`, `beverage`, `soft drink`, `snack`, `food`, `restaurant`, `delivery`, `streaming`, `insurance`, `bank`, `airline`, `hotel`, `telecom`. Keywords match whole words, so `app` never matches `apparel`.
+
+A filter never empties a slot: when it would, the best card the unfiltered list offered is kept and the reason is written into `coverage`.
+
+### The Bridge and the destination city
+
+The Bridge's hop-1 request for `listen`, `watch` and `wear` sends `signal.location.query=<destination city>`; Roots never does. `BRIDGE_USE_LOCATION` in `src/lib/pipeline/config.ts` records the decision per slot, taken from a probe that ran all three presets with and without the parameter. The list changes by 46–100%, the city list carries the destination's own scenes (Los Angeles answers with its Latin circuit and *Gentefied*; New York with Mitski and Rina Sawayama), and only the city list keeps the anchor's own family out of `wear`. One case reads slightly better without it — `watch` for the anime con — and the constant's comment says so.
 
 ## Where the LLM acts
 
@@ -47,7 +76,12 @@ pnpm prisma migrate deploy
 pnpm dev
 ```
 
-Optional: `pnpm warm` prebuilds the three presets in English and Spanish into the pack cache (needs Qloo + LLM). `pnpm verify:local` exercises presets over HTTP against a running app.
+Optional: `pnpm warm` prebuilds the three presets in English and Spanish into the pack cache (needs Qloo; the LLM is optional and upgrades the narration later). `pnpm warm --check` reports what is stored. `pnpm verify:local` exercises presets over HTTP against a running app.
+
+**After the daily Gemini quota resets**, run `pnpm warm` once more: the six rows then hold LLM narration instead of the template, and an LLM row replaces a template row of the same signature. Until then `pnpm warm --check` reports `fail:template` for all six, which is expected and not an error.
+
+The pack-cache signature includes `PIPELINE_VERSION` (`src/lib/pipeline/config.ts`), so changing how a pack is built makes every previously cached pack a miss. Bump it whenever the pipeline changes what a stored pack contains.
+
 
 ## Environment variables (names only)
 
@@ -74,7 +108,7 @@ Optional: `pnpm warm` prebuilds the three presets in English and Spanish into th
 
 - Free-tier Qloo and Gemini quotas; the app refuses custom live packs when the monthly reserve or daily soft cap is hit (presets and cached packs keep working).
 - Rate limits and soft caps are **in memory** for one instance.
-- Fandom wear brands can be noisy in insights.
+- The `do` slot's lodging filter reads only the first eight tags of a place, because its keywords are substrings ("Innovation" and "Dinner" both contain "inn"). The pipeline's own count and the final check share that window.
 - No Content-Security-Policy yet (Next inline scripts need nonces).
 
 ## License

@@ -8,6 +8,7 @@ import {
   stampCacheNarration,
   type PackCachePayload,
 } from "@/lib/pack/cache";
+import { PIPELINE_VERSION } from "@/lib/pipeline/config";
 
 function payloadWith(narrativeA: "llm" | "template", narrativeB: "llm" | "template"): PackCachePayload {
   return {
@@ -35,6 +36,16 @@ function payloadWith(narrativeA: "llm" | "template", narrativeB: "llm" | "templa
 }
 
 describe("packSignature", () => {
+  it("changes when the pipeline version changes", () => {
+    const base = { entityIds: ["BBB"], city: "Houston", eventKind: "tour", locale: "en" };
+    expect(packSignature({ ...base, pipelineVersion: "3h" })).not.toBe(
+      packSignature({ ...base, pipelineVersion: "3i" }),
+    );
+    // The default is the version the pipeline currently builds with, so an old row is a miss.
+    expect(packSignature(base)).toBe(packSignature({ ...base, pipelineVersion: PIPELINE_VERSION }));
+  });
+
+
   it("is stable regardless of seed entity id order", () => {
     const a = packSignature({
       entityIds: ["BBB", "aaa"],

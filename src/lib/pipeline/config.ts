@@ -1,3 +1,12 @@
+/**
+ * Bumped whenever the pack the pipeline builds changes shape or contents. It is part of
+ * the pack-cache signature, so a pack cached by an older pipeline is a miss and is rebuilt
+ * instead of being served under a stale shape. Bumped in pass 3i: the evidence panel, the
+ * one confidence rule, the seed-family and wear filters, the seed reference tags and the
+ * Spanish narration rule all change the stored cards.
+ */
+export const PIPELINE_VERSION = "3i";
+
 export const PLACE_STRATEGY: "s1" | "s2" | "s3" | "none" = "s3";
 export const PLACE_TIMEOUT_MS = 8000;
 export const BRIDGE_VARIANT: "a" | "b" | "c" = "a";

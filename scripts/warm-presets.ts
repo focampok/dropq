@@ -340,10 +340,12 @@ async function main(): Promise<void> {
   }
 
   resetGeminiCallCount();
+  // The LLM being off is not a reason to skip the rebuild: the pipeline version changed,
+  // so every stored row is a miss and the six rows still have to be rewritten with
+  // template narration. `pnpm warm` is run again after the daily Gemini quota resets to
+  // upgrade those same rows to LLM narration (an LLM row replaces a template row).
   if (!llmConfigured() || llmDisabled()) {
-    console.log("warm skipped_no_llm");
-    await prisma.$disconnect();
-    return;
+    console.log("warm llm_off: writing template rows");
   }
 
   const targets = warmTargets();

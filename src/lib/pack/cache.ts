@@ -6,6 +6,7 @@ import {
   PACK_CACHE_TTL_HOURS,
 } from "@/lib/config";
 import { isPresetSession } from "@/lib/abuse";
+import { PIPELINE_VERSION } from "@/lib/pipeline/config";
 
 export type PackCacheMode = "default" | "deep_cuts";
 
@@ -59,8 +60,11 @@ export function packSignature(input: {
   eventKind: string;
   locale: string;
   mode?: PackCacheMode;
+  /** Overridden only by tests; production always signs with the current pipeline. */
+  pipelineVersion?: string;
 }): string {
   const normalized = {
+    pipeline: input.pipelineVersion ?? PIPELINE_VERSION,
     entityIds: [...input.entityIds].map((id) => id.trim().toUpperCase()).filter(Boolean).sort(),
     city: input.city.trim().toLowerCase(),
     eventKind: input.eventKind,

@@ -57,6 +57,7 @@ Optional: `pnpm warm` prebuilds the three presets in English and Spanish into th
 | `SESSION_SECRET` | Signed session cookie |
 | `QLOO_API_KEY` | Qloo hackathon key |
 | `QLOO_BASE_URL` | Qloo API base |
+| `LLM_DISABLED` | `true` / `1` kills the LLM for the process |
 | `LLM_PROVIDER` | `google`, `nebius`, or empty |
 | `GOOGLE_GENERATIVE_AI_API_KEY` / `GEMINI_API_KEY` | Gemini key |
 | `GEMINI_MODEL` / `LLM_MODEL` | Principal model id |

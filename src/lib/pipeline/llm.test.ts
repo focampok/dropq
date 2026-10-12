@@ -103,6 +103,18 @@ describe("llm provider selection", () => {
       reason: "unknown_provider:openai",
     });
   });
+
+  it("honours LLM_DISABLED over a fully configured Google setup", () => {
+    const env = {
+      LLM_DISABLED: "true",
+      LLM_PROVIDER: "google",
+      GOOGLE_GENERATIVE_AI_API_KEY: "test",
+      GEMINI_MODEL: "configured-model",
+    };
+    expect(llmModelState(env)).toEqual({ configured: false, reason: "disabled" });
+    expect(llmStatus(env).offReason).toBe("disabled");
+    expect(llmModelState({ ...env, LLM_DISABLED: "1" }).configured).toBe(false);
+  });
 });
 
 describe("llm fallbacks", () => {
@@ -336,6 +348,30 @@ describe("llm fallbacks", () => {
     expect(generateObject).not.toHaveBeenCalled();
     expect(choice.source).toBe("fallback");
     expect(choice.failure).toBeUndefined();
+  });
+
+  it("does not call Gemini when LLM_DISABLED is true", async () => {
+    vi.stubEnv("LLM_DISABLED", "true");
+    vi.stubEnv("LLM_PROVIDER", "google");
+    vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test");
+    vi.stubEnv("GEMINI_MODEL", "configured-model");
+    vi.stubEnv("GEMINI_FALLBACK_MODELS", "other");
+    vi.stubEnv("NEBIUS_API_KEY", "");
+    vi.stubEnv("NEBIUS_BASE_URL", "");
+    vi.stubEnv("NEBIUS_MODEL", "");
+    const generateObject = vi.fn();
+    vi.doMock("ai", () => ({ generateObject }));
+    const { chooseBridgeAnchors, composeNarratives } = await loadLlm();
+    const anchors = await chooseBridgeAnchors(candidates);
+    expect(generateObject).not.toHaveBeenCalled();
+    expect(anchors.source).toBe("fallback");
+    const narratives = await composeNarratives({
+      locale: "en",
+      plans: [{ label: "A", city: "Houston", anchors: [], slots: { listen: "Karol G" } }],
+    });
+    expect(generateObject).not.toHaveBeenCalled();
+    expect(narratives.offReason).toBe("disabled");
+    expect(narratives.plans[0]).toMatchObject({ source: "template" });
   });
 
   it("falls back both callers when the Gemini loop throws, and records the last error code", async () => {

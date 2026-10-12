@@ -34,12 +34,20 @@ function missingNames(provider: LlmProviderId, env: LlmEnv): string[] {
   return REQUIRED[provider].filter((name) => !env[name]?.trim());
 }
 
+/** `true` / `1` (case-insensitive) turns the LLM off for the whole process. */
+export function llmDisabled(env: LlmEnv = process.env): boolean {
+  const raw = env.LLM_DISABLED?.trim().toLowerCase();
+  return raw === "true" || raw === "1";
+}
+
 /**
  * The AI SDK model for the configured provider, or a reason why the LLM is off.
  * Google has no default model id: the principal is `GEMINI_MODEL` or, if that is
  * empty, `LLM_MODEL`. No key is `no_key`. No principal is `no_model`.
+ * `LLM_DISABLED=true|1` wins over every other variable (`disabled`).
  */
 export function llmModelState(env: LlmEnv = process.env): LlmModelState {
+  if (llmDisabled(env)) return { configured: false, reason: "disabled" };
   const declared = env.LLM_PROVIDER?.trim().toLowerCase();
   const provider = llmProviderId(env);
   if (!provider) {

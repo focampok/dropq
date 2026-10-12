@@ -141,18 +141,21 @@ async function measure(page: Page, name: string, width: number, errors: string[]
  */
 async function badgeReport(page: Page): Promise<{
   present: boolean;
+  texts: number;
   separated: boolean;
   glued: boolean;
 }> {
   return page.evaluate(() => {
-    const badge = document.querySelector("[data-ai-badge]");
-    if (!badge) return { present: false, separated: true, glued: false };
     const text = document.querySelector("[data-narrative-text]");
-    if (!text) return { present: true, separated: false, glued: true };
+    const badge = document.querySelector("[data-ai-badge]");
+    const texts = document.querySelectorAll("[data-narrative-text]").length;
+    if (!text) return { present: Boolean(badge), texts, separated: false, glued: false };
+    if (!badge) return { present: false, texts, separated: true, glued: false };
     const narration = text.textContent ?? "";
     const badgeText = badge.textContent?.trim() ?? "";
     return {
       present: true,
+      texts,
       separated: text !== badge && !text.contains(badge) && !badge.contains(text),
       // A badge whose own text is already inside the narration is one glued string.
       glued: badgeText.length > 0 && narration.includes(badgeText),
@@ -268,8 +271,11 @@ async function main(): Promise<void> {
 
       const badge = await badgeReport(page);
       console.log(
-        `  AI badge: ${badge.present ? "shown" : "not shown"}; narration and badge separate: ${badge.separated ? "yes" : "no"}`,
+        `  narration elements: ${badge.texts}; AI badge: ${badge.present ? "shown" : "not shown"}; separate: ${badge.separated ? "yes" : "no"}`,
       );
+      // The narrative text is always its own element, badge or not, and when the badge
+      // is there it is a sibling: inside one text node it rendered as "Karol G.IA".
+      if (badge.texts < 2) failures.push(`${preset.id} narration is not in its own element per plan`);
       if (badge.present && (!badge.separated || badge.glued)) {
         failures.push(`${preset.id} AI badge is glued to the narration text`);
       }

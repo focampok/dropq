@@ -14,7 +14,7 @@
 import { placeTagExcluded } from "../src/lib/pack/assemble";
 import { packSignature } from "../src/lib/pack/cache";
 import { sharesWordSequence, wordOverlapRatio, workedExampleText } from "../src/lib/pipeline/copy-check";
-import { PINNED_PRESETS } from "../src/lib/pipeline/config";
+import { PINNED_PRESETS, PLACE_LODGING_TAG_WINDOW } from "../src/lib/pipeline/config";
 import { DEMO_PRESETS, type CityValue, type EventKind } from "../src/lib/presets";
 import { STEP_IDS } from "../src/lib/i18n/types";
 import { prisma } from "../src/lib/db";
@@ -196,7 +196,15 @@ function checkPlan(plan: Plan, failures: string[], where: string): void {
     if (!item.name?.trim()) failures.push(`${where}: ${item.slot} has no name`);
   }
   for (const item of plan.items.filter((entry) => entry.slot === "do")) {
-    const tags = [item.name, ...((item.evidence?.hitTags as string[] | undefined) ?? [])].join(" ").toLowerCase();
+    // The evidence now stores every tag a card carries; the lodging keywords are
+    // substrings ("Innovation" contains "inn"), so the check reads the same short
+    // window the pipeline's own count and assemblePack's filter use.
+    const tags = [
+      item.name,
+      ...((item.evidence?.hitTags as string[] | undefined) ?? []).slice(0, PLACE_LODGING_TAG_WINDOW),
+    ]
+      .join(" ")
+      .toLowerCase();
     if (LODGING.some((word) => tags.includes(word)) || placeTagExcluded(item.name)) {
       failures.push(`${where}: do looks like lodging (${item.name})`);
     }

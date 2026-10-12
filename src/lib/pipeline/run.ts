@@ -16,7 +16,7 @@ import {
   type SharedConfidence,
 } from "@/lib/pipeline/config";
 import { countSharedTags, type AnchorCandidate, type RankedAnchor } from "@/lib/pipeline/anchors";
-import { dedupeTags, TAG_PREVIEW_LIMIT } from "@/lib/pipeline/tags";
+import { dedupeTags, filterSlotCards, TAG_PREVIEW_LIMIT } from "@/lib/pipeline/tags";
 import {
   chooseBridgeAnchors,
   composeNarratives,
@@ -277,7 +277,9 @@ export async function runPipeline(
   const rootsLoad = expired()
     ? { slots: emptySlots() }
     : await loadSlots(resolved.map((seed) => seed.entityId), session.city, eventKind, 0, new Map(), "a");
-  const roots = rootsLoad.slots;
+  const rootsRaw = rootsLoad.slots;
+  const seedNamesForFilters = resolved.map((seed) => seed.name);
+  const roots = applySlotFilters(rootsRaw, seedNamesForFilters, append);
   if (expired()) append("The pack timed out. What was ready is shown.", "El pack agotó el tiempo. Se muestra lo que alcanzó.");
   emit({ step: "insights_hop0", status: "done" });
 
@@ -299,7 +301,8 @@ export async function runPipeline(
   emit({ step: "insights_hop1", status: "active" });
   const excluded = new Map<PackSlot, string[]>();
   for (const slot of PACK_SLOTS) {
-    excluded.set(slot, (roots.get(slot) ?? []).map((card) => card.entityId));
+    // Unfiltered on purpose: a card dropped by a filter must not come back at hop 1.
+    excluded.set(slot, (rootsRaw.get(slot) ?? []).map((card) => card.entityId));
   }
   const bridgeLoad =
     expired() || anchorIds.length < 2
@@ -312,7 +315,7 @@ export async function runPipeline(
           excluded,
           options?.bridgeVariant === "deep" ? "deep" : "a",
         );
-  const bridge = bridgeLoad.slots;
+  const bridge = applySlotFilters(bridgeLoad.slots, seedNamesForFilters, append);
   notePlaceOmission(bridgeLoad, append);
   emit({ step: "insights_hop1", status: "done" });
 
@@ -432,6 +435,55 @@ function templateFor(plan: NarrativePlanInput, locale: "en" | "es"): PlanNarrati
 
 function emptySlots(): Map<PackSlot, Card[]> {
   return new Map(PACK_SLOTS.map((slot) => [slot, []]));
+}
+
+function listOf(names: readonly string[]): string {
+  return names.length <= 3 ? names.join(", ") : `${names.slice(0, 3).join(", ")} +${names.length - 3}`;
+}
+
+/**
+ * Drops the seeds' own family from every slot and non-wearables from `wear`, and says so
+ * in `coverage`. Both filters read lists Qloo already returned, so neither costs a call.
+ * A slot is never emptied by a filter: the fallback is reported, not silent.
+ */
+function applySlotFilters(
+  slots: Map<PackSlot, Card[]>,
+  seedNames: readonly string[],
+  append: (en: string, es: string) => void,
+): Map<PackSlot, Card[]> {
+  const out = new Map<PackSlot, Card[]>();
+  for (const slot of PACK_SLOTS) {
+    const cards = slots.get(slot) ?? [];
+    const result = filterSlotCards(slot, cards, seedNames);
+    out.set(slot, result.cards);
+    if (result.seedFamilyDropped.length > 0) {
+      const names = listOf(result.seedFamilyDropped);
+      append(
+        `Dropped as the anchors' own family: ${names}.`,
+        `Se quitó por ser de la familia de las anclas: ${names}.`,
+      );
+    }
+    if (result.wearTagsDropped.length > 0) {
+      const names = listOf(result.wearTagsDropped);
+      append(
+        `Not wearable, dropped from wear: ${names}.`,
+        `No es ropa, se quitó de Llevar: ${names}.`,
+      );
+    }
+    if (result.keptFallback === "seed_family" && result.cards[0]) {
+      append(
+        `Every candidate was the anchors' own family; ${result.cards[0].name} was kept.`,
+        `Todos los candidatos eran de la familia de las anclas; se conservó ${result.cards[0].name}.`,
+      );
+    }
+    if (result.keptFallback === "wear_tags" && result.cards[0]) {
+      append(
+        `No candidate looked wearable; ${result.cards[0].name} was kept.`,
+        `Ningún candidato parecía ropa; se conservó ${result.cards[0].name}.`,
+      );
+    }
+  }
+  return out;
 }
 
 /** States the stage counts and the retry whenever the place slot ends up omitted. */
@@ -1341,7 +1393,7 @@ export async function refineBridge(
     !qlooApiKey() || anchorIds.length < 2
       ? { slots: emptySlots() }
       : await loadSlots(anchorIds, session.city, eventKind, 1, excluded, mode === "deep_cuts" ? "deep" : "a");
-  const bridgeSlots = bridgeLoad.slots;
+  const bridgeSlots = applySlotFilters(bridgeLoad.slots, seedNames(session.seeds), append);
   notePlaceOmission(bridgeLoad, append);
   emit({ step: "insights_hop1", status: "done" });
   if ((bridgeSlots.get("do") ?? []).some((card) => card.chosenByCity)) {

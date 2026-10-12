@@ -1,6 +1,9 @@
 /**
  * Warm pinned presets into PackCache, or `--check` the stored rows (no network).
  * Never replaces an LLM-narrated row with a template one.
+ *
+ * Builds 3 presets × en/es = 6 rows. A failure or gemini budget hit on one row must
+ * not abort the remaining rows (that left Spanish missing after the previous warm).
  */
 import { existsSync } from "node:fs";
 import { loadEnvFile } from "node:process";
@@ -22,10 +25,29 @@ import {
   type PackCachePayload,
 } from "../src/lib/pack/cache";
 
-const LOCALES = ["en", "es"] as const;
-const GEMINI_BUDGET = 25;
+export const LOCALES = ["en", "es"] as const;
+/** Enough for 6 rows × a few chain attempts; do not abort mid-matrix when one row is slow. */
+const GEMINI_BUDGET = 48;
 const WARM_ATTEMPTS = 3;
 const WARM_RETRY_PAUSE_MS = 2_000;
+
+export type WarmLocale = (typeof LOCALES)[number];
+
+export type WarmTarget = {
+  presetId: (typeof PINNED_PRESETS)[number]["id"];
+  locale: WarmLocale;
+};
+
+/** Every preset × language the warm command must visit (6 rows). */
+export function warmTargets(): WarmTarget[] {
+  const out: WarmTarget[] = [];
+  for (const preset of PINNED_PRESETS) {
+    for (const locale of LOCALES) {
+      out.push({ presetId: preset.id, locale });
+    }
+  }
+  return out;
+}
 
 export type WarmCheckRow = {
   presetId: string;
@@ -95,42 +117,71 @@ export function evaluateWarmCheck(input: {
   };
 }
 
+/** One report line for a warmed or checked row (preset, lang, A/B narration, models, calls). */
+export function formatWarmRowLine(input: {
+  presetId: string;
+  locale: string;
+  status: string;
+  narration: { A: string; B: string };
+  modelUsed: { A: string | null; B: string | null };
+  geminiCalls: number;
+  qlooCalls: number;
+  extra?: string;
+}): string {
+  const parts = [
+    input.presetId,
+    input.locale,
+    input.status,
+    `A=${input.narration.A}`,
+    `B=${input.narration.B}`,
+    `modelA=${input.modelUsed.A ?? "none"}`,
+    `modelB=${input.modelUsed.B ?? "none"}`,
+    `gemini=${input.geminiCalls}`,
+    `qloo=${input.qlooCalls}`,
+  ];
+  if (input.extra) parts.push(input.extra);
+  return parts.join(" ");
+}
+
 async function checkMode(): Promise<number> {
   let failed = 0;
-  for (const preset of PINNED_PRESETS) {
-    for (const locale of LOCALES) {
-      const entityIds = preset.seeds.map((seed) => seed.entityId!).filter(Boolean);
-      const signature = packSignature({
-        entityIds,
-        city: preset.city,
-        eventKind: preset.eventKind,
-        locale,
-        mode: "default",
-      });
-      const row = await prisma.packCache.findUnique({ where: { signature } });
-      const result = evaluateWarmCheck({
-        presetId: preset.id,
-        locale,
-        row: row
-          ? { payload: row.payload as unknown as PackCachePayload, builtAt: row.builtAt }
-          : null,
-      });
-      if (!result.ok) failed += 1;
-      console.log(
-        [
-          result.presetId,
-          result.locale,
-          result.builtAt ?? "missing",
-          result.ageHours == null ? "age=n/a" : `age_h=${result.ageHours}`,
-          `A=${result.narration.A}`,
-          `B=${result.narration.B}`,
-          `modelA=${result.modelUsed.A ?? "none"}`,
-          `modelB=${result.modelUsed.B ?? "none"}`,
-          result.ok ? "ok" : `fail:${result.reason}`,
-        ].join(" "),
-      );
-    }
+  const targets = warmTargets();
+  for (const target of targets) {
+    const preset = PINNED_PRESETS.find((row) => row.id === target.presetId)!;
+    const entityIds = preset.seeds.map((seed) => seed.entityId!).filter(Boolean);
+    const signature = packSignature({
+      entityIds,
+      city: preset.city,
+      eventKind: preset.eventKind,
+      locale: target.locale,
+      mode: "default",
+    });
+    const row = await prisma.packCache.findUnique({ where: { signature } });
+    const result = evaluateWarmCheck({
+      presetId: target.presetId,
+      locale: target.locale,
+      row: row
+        ? { payload: row.payload as unknown as PackCachePayload, builtAt: row.builtAt }
+        : null,
+    });
+    if (!result.ok) failed += 1;
+    console.log(
+      formatWarmRowLine({
+        presetId: result.presetId,
+        locale: result.locale,
+        status: result.ok ? "ok" : `fail:${result.reason}`,
+        narration: result.narration,
+        modelUsed: result.modelUsed,
+        geminiCalls: 0,
+        qlooCalls: 0,
+        extra:
+          result.builtAt == null
+            ? "age=n/a"
+            : `${result.builtAt} age_h=${result.ageHours}`,
+      }),
+    );
   }
+  console.log(`warm check ${targets.length - failed}/${targets.length} ok`);
   return failed > 0 ? 1 : 0;
 }
 
@@ -140,7 +191,7 @@ async function sleep(ms: number): Promise<void> {
 
 async function buildOnce(
   preset: (typeof PINNED_PRESETS)[number],
-  locale: (typeof LOCALES)[number],
+  locale: WarmLocale,
 ): Promise<{ payload: PackCachePayload; qlooCalls: number } | null> {
   const qlooBefore = observedQlooCalls();
   const session = await prisma.session.create({
@@ -159,7 +210,7 @@ async function buildOnce(
     const message = error instanceof Error ? error.message : "failed";
     const key = process.env.QLOO_API_KEY ?? "";
     const safe = key ? message.split(key).join("[redacted]") : message;
-    console.log(`${preset.id}/${locale} stopped ${safe}`);
+    console.log(`${preset.id}/${locale} build_error ${safe}`);
     return null;
   }
   const snap = await snapshotSessionPacks(session.id);
@@ -182,11 +233,14 @@ function pickBetter(
   return left;
 }
 
+export type WarmOneOutcome = "ok" | "needs_rewarm" | "skipped_budget" | "skipped_quota" | "failed";
+
 async function warmOne(
   preset: (typeof PINNED_PRESETS)[number],
-  locale: (typeof LOCALES)[number],
-): Promise<"ok" | "stopped" | "needs_rewarm"> {
+  locale: WarmLocale,
+): Promise<WarmOneOutcome> {
   const started = Date.now();
+  const geminiBefore = geminiCallCount();
   const entityIds = preset.seeds.map((seed) => seed.entityId!).filter(Boolean);
   const signature = packSignature({
     entityIds,
@@ -199,24 +253,32 @@ async function warmOne(
   const llmOn = llmConfigured() && !llmDisabled();
   const attempts = llmOn ? WARM_ATTEMPTS : 1;
   let best: { payload: PackCachePayload; qlooCalls: number } | null = null;
+  let skippedBudget = false;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     if (geminiCallCount() >= GEMINI_BUDGET) {
-      console.log(`stopped gemini_budget=${GEMINI_BUDGET}`);
-      return "stopped";
+      skippedBudget = true;
+      break;
     }
     const quota = qlooQuota();
     if (quota.blocked || (quota.remaining !== undefined && quota.remaining < QLOO_CUSTOM_RESERVE)) {
-      console.log(`${preset.id}/${locale} skipped_quota_reserve`);
-      return "stopped";
+      console.log(
+        formatWarmRowLine({
+          presetId: preset.id,
+          locale,
+          status: "skipped_quota_reserve",
+          narration: { A: "missing", B: "missing" },
+          modelUsed: { A: null, B: null },
+          geminiCalls: geminiCallCount() - geminiBefore,
+          qlooCalls: 0,
+        }),
+      );
+      return "skipped_quota";
     }
-    if (llmOn && geminiQuotaBlocked()) {
-      console.log(`${preset.id}/${locale} stopped_quota_cooldown`);
-      break;
-    }
+    if (llmOn && geminiQuotaBlocked()) break;
 
     const built = await buildOnce(preset, locale);
-    if (!built) return "stopped";
+    if (!built) break;
     best = pickBetter(best, built);
     if (packNarrationGrade(best.payload) === "llm") break;
     if (llmOn && geminiQuotaBlocked()) break;
@@ -224,8 +286,19 @@ async function warmOne(
   }
 
   if (!best) {
-    console.log(`${preset.id}/${locale} empty`);
-    return "needs_rewarm";
+    console.log(
+      formatWarmRowLine({
+        presetId: preset.id,
+        locale,
+        status: skippedBudget ? "skipped_gemini_budget" : "failed",
+        narration: { A: "missing", B: "missing" },
+        modelUsed: { A: null, B: null },
+        geminiCalls: geminiCallCount() - geminiBefore,
+        qlooCalls: 0,
+        extra: `ms=${Date.now() - started}`,
+      }),
+    );
+    return skippedBudget ? "skipped_budget" : "failed";
   }
 
   const result = await writePackCacheIfBetter({
@@ -234,9 +307,25 @@ async function warmOne(
     qlooCalls: best.qlooCalls,
     isPreset: true,
   });
-  const flag = result.grade === "template" ? " needs_rewarm" : "";
+  const a = planNarration(best.payload.packs.find((p) => p.label === "A"));
+  const b = planNarration(best.payload.packs.find((p) => p.label === "B"));
+  const status =
+    result.grade === "template"
+      ? "needs_rewarm"
+      : result.wrote
+        ? "cached"
+        : "kept";
   console.log(
-    `${preset.id}/${locale} ${result.wrote ? "cached" : "kept"} packs=${best.payload.packs.length} narration=${result.grade} qloo=${best.qlooCalls} gemini=${geminiCallCount()} ms=${Date.now() - started} preset=${detectPresetFromPayload(best.payload)}${flag}`,
+    formatWarmRowLine({
+      presetId: preset.id,
+      locale,
+      status,
+      narration: { A: a.grade, B: b.grade },
+      modelUsed: { A: a.modelUsed, B: b.modelUsed },
+      geminiCalls: geminiCallCount() - geminiBefore,
+      qlooCalls: best.qlooCalls,
+      extra: `ms=${Date.now() - started} preset=${detectPresetFromPayload(best.payload)}`,
+    }),
   );
   return result.grade === "template" ? "needs_rewarm" : "ok";
 }
@@ -257,16 +346,17 @@ async function main(): Promise<void> {
     return;
   }
 
-  for (const preset of PINNED_PRESETS) {
-    for (const locale of LOCALES) {
-      const outcome = await warmOne(preset, locale);
-      if (outcome === "stopped") {
-        await prisma.$disconnect();
-        return;
-      }
-    }
+  const targets = warmTargets();
+  let ok = 0;
+  for (const target of targets) {
+    const preset = PINNED_PRESETS.find((row) => row.id === target.presetId)!;
+    const outcome = await warmOne(preset, target.locale);
+    if (outcome === "ok") ok += 1;
+    // Continue every remaining preset×locale — never abort the matrix early.
   }
-  console.log(`warm done gemini=${geminiCallCount()} qloo=${observedQlooCalls()}`);
+  console.log(
+    `warm done ${ok}/${targets.length} llm_rows gemini=${geminiCallCount()} qloo=${observedQlooCalls()}`,
+  );
   await prisma.$disconnect();
 }
 

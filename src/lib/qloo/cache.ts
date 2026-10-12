@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { insights, qlooQuota, search } from "@/lib/qloo/client";
+import { entitiesByIds, entityTagNames, insights, qlooQuota, search } from "@/lib/qloo/client";
 import type { InsightsParams, QlooEntity, QlooInsightHit, QlooResult } from "@/lib/qloo/types";
 import { QlooQuotaError } from "@/lib/qloo/types";
 
 const ENTITY_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const INSIGHT_TTL_MS = 72 * 60 * 60 * 1000;
+const ENTITY_TAG_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 export type InsightCacheParts = {
   anchors: string[];
@@ -87,6 +88,41 @@ export async function cachedSearch(query: string, type?: string): Promise<QlooRe
     });
   }
   return fresh;
+}
+
+function asTagList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((tag): tag is string => typeof tag === "string") : [];
+}
+
+/**
+ * The reference tags of one or more entities, from the documented entity lookup and
+ * cached for 14 days like the entity rows themselves. Only ids missing from the cache
+ * are fetched, in a single request; a fully cached call costs no request at all.
+ */
+export async function cachedEntityTags(entityIds: string[]): Promise<Map<string, string[]>> {
+  const unique = [...new Set(entityIds.map((id) => id.trim()).filter(Boolean))];
+  const out = new Map<string, string[]>();
+  if (unique.length === 0) return out;
+  const cutoff = new Date(Date.now() - ENTITY_TAG_TTL_MS);
+  const rows = await prisma.entityTagCache.findMany({
+    where: { entityId: { in: unique }, fetchedAt: { gte: cutoff } },
+  });
+  for (const row of rows) out.set(row.entityId, asTagList(row.tags));
+
+  const missing = unique.filter((id) => !out.has(id));
+  if (missing.length === 0) return out;
+  if (qlooQuota().blocked) throw new QlooQuotaError();
+  const fresh = await entitiesByIds(missing);
+  for (const entity of fresh.results) {
+    const tags = entityTagNames(entity.raw);
+    out.set(entity.entityId, tags);
+    await prisma.entityTagCache.upsert({
+      where: { entityId: entity.entityId },
+      create: { entityId: entity.entityId, tags: asJson(tags), fetchedAt: new Date() },
+      update: { tags: asJson(tags), fetchedAt: new Date() },
+    });
+  }
+  return out;
 }
 
 export async function cachedInsights(

@@ -35,6 +35,7 @@ vi.mock("@/lib/db", () => ({
     },
     qlooEntityCache: { findMany: async () => [], upsert: async () => ({}) },
     insightCache: { findUnique: async () => null, upsert: async () => ({}) },
+    entityTagCache: { findMany: async () => [], upsert: async () => ({}) },
     $transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
         pack: {
@@ -126,6 +127,12 @@ vi.mock("@/lib/qloo/client", () => ({
       raw: {},
     };
   },
+  // The real extractor, inline: the mock replaces the whole client module.
+  entityTagNames: (raw: { tags?: { name?: unknown }[] }) =>
+    Array.isArray(raw?.tags)
+      ? raw.tags.flatMap((tag) => (typeof tag?.name === "string" ? [tag.name] : []))
+      : [],
+  entitiesByIds: async () => ({ provenance: "qloo", results: [] }),
   qlooQuota: () => ({ blocked: false }),
 }));
 

@@ -125,6 +125,18 @@ model QlooEntityCache {
   @@map("qloo_entity_cache")
 }
 
+/// The tags of an entity, read from the documented entity lookup rather than from a
+/// search result: search returns award and role tags for an artist, while the lookup
+/// returns the genre and mood tags the insights hits carry.
+model EntityTagCache {
+  entityId  String   @id @map("entity_id")
+  tags      Json
+  fetchedAt DateTime @map("fetched_at")
+
+  @@index([fetchedAt])
+  @@map("entity_tag_cache")
+}
+
 model InsightCache {
   cacheKey   String   @id @map("cache_key")
   filterType String   @map("filter_type")

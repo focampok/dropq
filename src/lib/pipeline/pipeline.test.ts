@@ -466,6 +466,21 @@ describe("evidence panel and the one confidence rule", () => {
     expect(capped?.confidence).toBe("low");
   });
 
+  it("changes the shared-tag count when the richer reference set arrives", () => {
+    const slots = new Map([
+      ["listen" as const, [makeCard("listen", "balvin", "J Balvin", ["Reggaeton", "Trap Latino", "Latin", "Energetic"])]],
+    ]);
+    // What /search returns for the seed: award and role tags, no genre overlap at all.
+    const fromSearch = new Set(["grammy award winners", "actor", "puerto rican rappers"]);
+    // What the documented entity lookup returns for the same seed.
+    const fromLookup = new Set(["reggaeton", "trap latino", "latin", "energetic", "puerto rico"]);
+    const [thin] = cardsToItems(slots, 0, fromSearch, new Set());
+    const [rich] = cardsToItems(slots, 0, fromLookup, new Set());
+    expect(thin?.confidence).toBe("low");
+    expect(rich?.confidence).toBe("high");
+    expect((rich?.evidence as { sharedTagCount?: number }).sharedTagCount).toBe(4);
+  });
+
   it("counts a repeated tag once when it decides confidence", () => {
     const slots = new Map([
       ["listen" as const, [makeCard("listen", "balvin", "J Balvin", ["Energetic", "Energetic", "Energetic", "Reggaeton"])]],

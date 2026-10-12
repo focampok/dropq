@@ -1,6 +1,7 @@
 import { qlooApiKey, resolveQlooBaseUrl } from "@/lib/qloo/config";
 import { fixtureSearch } from "@/lib/qloo/fixtures";
 import {
+  serializeArray,
   toCompareSearchParams,
   toInsightsSearchParams,
   toSearchParams,
@@ -325,6 +326,47 @@ export async function search(args: {
     };
   }
   const response = await perform("/search", toSearchParams(args));
+  return attachRates(
+    {
+      provenance: "qloo",
+      results: resultList(response.body, "entities").flatMap((entry) => {
+        const entity = toEntity(entry);
+        return entity ? [entity] : [];
+      }),
+      raw: response.body,
+    },
+    response.rateHeaders,
+  );
+}
+
+/** Tag names carried by an entity payload, from whichever shape the endpoint used. */
+export function entityTagNames(raw: unknown): string[] {
+  if (!raw || typeof raw !== "object") return [];
+  const tags = (raw as { tags?: unknown }).tags;
+  if (!Array.isArray(tags)) return [];
+  return tags.flatMap((tag) => {
+    if (!tag || typeof tag !== "object") return [];
+    const name = (tag as { name?: unknown }).name;
+    return typeof name === "string" && name.trim() ? [name.trim()] : [];
+  });
+}
+
+/**
+ * The documented entity lookup. Search answers with award and role tags for an artist
+ * ("Grammy Award Winners", "Actor"), while this returns the same entity's genre and mood
+ * tags ("Reggaeton", "Latin Trap", "Energetic") — the ones the insights hits carry, so
+ * shared tags finally mean something. Ids that the lookup does not know are simply absent.
+ */
+export async function entitiesByIds(ids: string[]): Promise<QlooResult<QlooEntity[]>> {
+  const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+  if (unique.length === 0) return { provenance: "qloo", results: [] };
+  if (!qlooApiKey()) return { provenance: "mock", results: [] };
+  const params = new URLSearchParams();
+  params.set("entity_ids", serializeArray(unique));
+  const response = await qlooGet("/entities", params);
+  if (response.status !== 200) {
+    return { provenance: "qloo", results: [], raw: response.body };
+  }
   return attachRates(
     {
       provenance: "qloo",

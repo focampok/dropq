@@ -54,6 +54,10 @@ vi.mock("@/lib/db", () => ({
       findUnique: async () => null,
       upsert: async () => ({}),
     },
+    entityTagCache: {
+      findMany: async () => [],
+      upsert: async () => ({}),
+    },
     $transaction: async (fn: (tx: {
       packItem: { deleteMany: (args: { where: { packId: string } }) => Promise<void> };
       pack: { update: (args: { where: { id: string }; data: { narrative: string; coverage: Record<string, unknown>; items: { create: Omit<Row, "id">[] } } }) => Promise<unknown> };
@@ -111,6 +115,12 @@ vi.mock("@/lib/qloo/client", () => ({
         : [hit(`${prefix}-${slot}`)];
     return { provenance: "qloo", results, raw: {} };
   },
+  // The real extractor, inline: the mock replaces the whole client module.
+  entityTagNames: (raw: { tags?: { name?: unknown }[] }) =>
+    Array.isArray(raw?.tags)
+      ? raw.tags.flatMap((tag) => (typeof tag?.name === "string" ? [tag.name] : []))
+      : [],
+  entitiesByIds: async () => ({ provenance: "qloo", results: [] }),
   qlooQuota: () => ({ blocked: false }),
 }));
 

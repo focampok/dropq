@@ -1,8 +1,8 @@
 import type { EventKind, Prisma, SeedDomain } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { qlooApiKey } from "@/lib/qloo/config";
-import { search } from "@/lib/qloo/client";
-import { cachedInsights, cachedSearch } from "@/lib/qloo/cache";
+import { entityTagNames, search } from "@/lib/qloo/client";
+import { cachedEntityTags, cachedInsights, cachedSearch } from "@/lib/qloo/cache";
 import { QlooQuotaError, type QlooInsightHit } from "@/lib/qloo/types";
 import { assemblePack } from "@/lib/pack/assemble";
 import fixture from "@/lib/pack/fixture.json";
@@ -130,16 +130,7 @@ type Card = {
 };
 
 function tagNames(raw: unknown): string[] {
-  if (!raw || typeof raw !== "object") return [];
-  const tags = (raw as { tags?: unknown }).tags;
-  if (!Array.isArray(tags)) return [];
-  return dedupeTags(
-    tags.flatMap((tag) => {
-      if (!tag || typeof tag !== "object") return [];
-      const name = (tag as { name?: unknown }).name;
-      return typeof name === "string" && name.trim() ? [name.trim()] : [];
-    }),
-  );
+  return dedupeTags(entityTagNames(raw));
 }
 
 /**
@@ -156,10 +147,33 @@ async function seedTags(rawText: string): Promise<string[]> {
   }
 }
 
-async function seedTagSet(seeds: { rawText: string }[]): Promise<Set<string>> {
+/**
+ * The reference tag set shared tags and confidence are measured against.
+ *
+ * Search answers with award and role tags for an artist ("Grammy Award Winners",
+ * "Actor"); the documented entity lookup answers with the same entity's genre and mood
+ * tags ("Reggaeton", "Latin Trap", "Energetic") — the ones the insights hits carry. The
+ * lookup therefore wins whenever a seed has an id, in one batched, 14-day-cached request.
+ * A seed the lookup does not know keeps the tags search already gave it.
+ */
+async function seedReferenceTags(
+  seeds: readonly { rawText: string; entityId?: string | null; tags?: readonly string[] }[],
+): Promise<Set<string>> {
+  const ids = seeds.flatMap((seed) => (seed.entityId ? [seed.entityId] : []));
+  const byId = await cachedEntityTags(ids);
   const tags = new Set<string>();
   for (const seed of seeds) {
-    for (const tag of await seedTags(seed.rawText)) tags.add(tag.toLowerCase());
+    const found = seed.entityId ? byId.get(seed.entityId) : undefined;
+    const list =
+      found && found.length > 0
+        ? found
+        : seed.tags && seed.tags.length > 0
+          ? seed.tags
+          : await seedTags(seed.rawText);
+    for (const tag of list) {
+      const key = tag.trim().toLowerCase();
+      if (key) tags.add(key);
+    }
   }
   return tags;
 }
@@ -283,7 +297,7 @@ export async function runPipeline(
   if (expired()) append("The pack timed out. What was ready is shown.", "El pack agotó el tiempo. Se muestra lo que alcanzó.");
   emit({ step: "insights_hop0", status: "done" });
 
-  const anchorTags = new Set(resolved.flatMap((seed) => seed.tags.map((tag) => tag.toLowerCase())));
+  const anchorTags = await seedReferenceTags(resolved);
   emit({ step: "pick_bridge_anchors", status: "active" });
   const anchorChoice = expired()
     ? emptyAnchorChoice()
@@ -1374,7 +1388,14 @@ export async function refineBridge(
       },
     ];
   });
-  const seedTags = qlooApiKey() ? await seedTagSet(session.seeds) : new Set<string>();
+  const seedTags = qlooApiKey()
+    ? await seedReferenceTags(
+        session.seeds.map((seed) => ({
+          rawText: seed.rawText,
+          entityId: seed.resolvedEntityId,
+        })),
+      )
+    : new Set<string>();
   const anchorChoice = qlooApiKey()
     ? await chooseBridgeAnchors(candidates, seedTags)
     : emptyAnchorChoice(candidates.map((item) => item.id));

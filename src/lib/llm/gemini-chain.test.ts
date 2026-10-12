@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  GEMINI_ATTEMPT_CAP_FRACTION_ANCHORS,
+  GEMINI_ATTEMPT_CAP_FRACTION_NARRATION,
+  GEMINI_SLOW_DEMOTION_MS,
+  GEMINI_SLOW_LATENCY_FRACTION,
+} from "@/lib/config";
+import {
   GeminiChain,
   GeminiDeadlineError,
   GeminiQuotaError,
@@ -12,6 +18,7 @@ import {
   resetGeminiCallCount,
   type ChainCall,
 } from "@/lib/llm/gemini-chain";
+import { ANCHOR_ATTEMPT_CAP_MS, ANCHOR_TIMEOUT_MS, LLM_TIMEOUT_MS, NARRATION_ATTEMPT_CAP_MS } from "@/lib/pipeline/llm";
 
 const THREE = ["principal", "fallback-a", "fallback-b"];
 
@@ -362,5 +369,155 @@ describe("gemini fallback loop", () => {
     })).rejects.toBe(error);
     expect(chain.modeloPreferidoIdx).toBe(0);
     expect(isTransient(error)).toBe(false);
+  });
+
+  it("abandons a hanging principal at the per-attempt cap and lets the next model answer", async () => {
+    vi.useFakeTimers();
+    const chain = new GeminiChain(config(["principal", "fallback-a"]), {
+      now: () => Date.now(),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    });
+    const seen: string[] = [];
+    const pending = chain.generate(
+      6_000,
+      ({ modelId, abortSignal }: ChainCall) => {
+        seen.push(modelId);
+        if (modelId === "principal") {
+          return new Promise((_, reject) => {
+            abortSignal.addEventListener("abort", () => {
+              const error = new Error("This operation was aborted");
+              error.name = "AbortError";
+              reject(error);
+            });
+          });
+        }
+        return Promise.resolve("ok");
+      },
+      { attemptCapMs: 3_000 },
+    );
+    await vi.advanceTimersByTimeAsync(3_000);
+    await expect(pending).resolves.toMatchObject({ value: "ok", trace: { modelUsed: "fallback-a" } });
+    expect(seen).toEqual(["principal", "fallback-a"]);
+    expect(chain.isDemoted("principal")).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("demotes a model after two slow answers and starts the next call on the next model", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-12T18:00:00.000Z"));
+    let now = Date.now();
+    const chain = new GeminiChain(config(["principal", "fallback-a"]), {
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+    });
+    const cap = 3_000;
+    const slowMs = Math.floor(cap * GEMINI_SLOW_LATENCY_FRACTION) + 1;
+    for (let i = 0; i < 2; i += 1) {
+      await chain.generate(
+        12_000,
+        async ({ modelId }) => {
+          now += slowMs;
+          return modelId;
+        },
+        { attemptCapMs: cap },
+      );
+    }
+    expect(chain.isDemoted("principal")).toBe(true);
+    const seen: string[] = [];
+    await chain.generate(
+      12_000,
+      async ({ modelId }) => {
+        seen.push(modelId);
+        return modelId;
+      },
+      { attemptCapMs: cap },
+    );
+    expect(seen).toEqual(["fallback-a"]);
+    vi.useRealTimers();
+  });
+
+  it("expires demotion after the configured window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-12T18:00:00.000Z"));
+    let now = Date.now();
+    const chain = new GeminiChain(config(["principal", "fallback-a"]), {
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+    });
+    const cap = 3_000;
+    const slowMs = Math.floor(cap * GEMINI_SLOW_LATENCY_FRACTION) + 1;
+    for (let i = 0; i < 2; i += 1) {
+      await chain.generate(
+        12_000,
+        async ({ modelId }) => {
+          now += slowMs;
+          return modelId;
+        },
+        { attemptCapMs: cap },
+      );
+    }
+    expect(chain.isDemoted("principal")).toBe(true);
+    now += GEMINI_SLOW_DEMOTION_MS;
+    expect(chain.isDemoted("principal")).toBe(false);
+    chain.modeloPreferidoIdx = 0;
+    const seen: string[] = [];
+    await chain.generate(12_000, async ({ modelId }) => {
+      seen.push(modelId);
+      return modelId;
+    });
+    expect(seen[0]).toBe("principal");
+    vi.useRealTimers();
+  });
+
+  it("still uses a demoted model when every other model has failed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-12T18:00:00.000Z"));
+    let now = Date.now();
+    const chain = new GeminiChain(config(["principal", "fallback-a"]), {
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+    });
+    const cap = 3_000;
+    const slowMs = Math.floor(cap * GEMINI_SLOW_LATENCY_FRACTION) + 1;
+    for (let i = 0; i < 2; i += 1) {
+      await chain.generate(
+        12_000,
+        async ({ modelId }) => {
+          now += slowMs;
+          return modelId;
+        },
+        { attemptCapMs: cap },
+      );
+    }
+    expect(chain.isDemoted("principal")).toBe(true);
+    const seen: string[] = [];
+    const result = await chain.generate(
+      60_000,
+      async ({ modelId }) => {
+        seen.push(modelId);
+        if (modelId === "fallback-a") throw http(404, "gone");
+        return "from-demoted";
+      },
+      { attemptCapMs: cap },
+    );
+    expect(seen).toEqual(["fallback-a", "principal"]);
+    expect(result.value).toBe("from-demoted");
+    vi.useRealTimers();
+  });
+
+  it("uses distinct per-attempt caps for anchors and narration", () => {
+    expect(GEMINI_ATTEMPT_CAP_FRACTION_ANCHORS).toBe(0.5);
+    expect(GEMINI_ATTEMPT_CAP_FRACTION_NARRATION).toBe(0.5);
+    expect(ANCHOR_ATTEMPT_CAP_MS).toBe(Math.floor(ANCHOR_TIMEOUT_MS * GEMINI_ATTEMPT_CAP_FRACTION_ANCHORS));
+    expect(NARRATION_ATTEMPT_CAP_MS).toBe(Math.floor(LLM_TIMEOUT_MS * GEMINI_ATTEMPT_CAP_FRACTION_NARRATION));
+    expect(ANCHOR_ATTEMPT_CAP_MS).toBe(3_000);
+    expect(NARRATION_ATTEMPT_CAP_MS).toBe(6_000);
+    expect(ANCHOR_ATTEMPT_CAP_MS).not.toBe(NARRATION_ATTEMPT_CAP_MS);
   });
 });

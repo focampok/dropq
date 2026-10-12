@@ -1,18 +1,24 @@
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { generateObject } from "ai";
 import { z } from "zod";
+import {
+  GEMINI_ATTEMPT_CAP_FRACTION_ANCHORS,
+  GEMINI_ATTEMPT_CAP_FRACTION_NARRATION,
+} from "@/lib/config";
 import { getDictionary, type Locale } from "@/lib/i18n";
 import {
   GEMINI_THINKING_LEVEL,
   GeminiChain,
   GeminiDeadlineError,
   GeminiQuotaError,
+  classifyRateLimit,
   geminiFailureCode,
   mergeTrace,
   noteGeminiCall,
   readGeminiConfig,
   readTrace,
   type LlmCallTrace,
+  type RateLimitKind,
 } from "@/lib/llm/gemini-chain";
 import fixture from "@/lib/pack/fixture.json";
 import { NARRATIVE_WORKED_EXAMPLE } from "@/lib/pipeline/copy-check";
@@ -30,6 +36,10 @@ import { llmHourlyAllowed } from "@/lib/rate-limit";
 export const LLM_TIMEOUT_MS = 12_000;
 /** Anchor choice happens before assemble, so it gets a tighter budget. */
 export const ANCHOR_TIMEOUT_MS = 6_000;
+
+/** Per-attempt abort caps derived from the call deadline fractions in config. */
+export const ANCHOR_ATTEMPT_CAP_MS = Math.floor(ANCHOR_TIMEOUT_MS * GEMINI_ATTEMPT_CAP_FRACTION_ANCHORS);
+export const NARRATION_ATTEMPT_CAP_MS = Math.floor(LLM_TIMEOUT_MS * GEMINI_ATTEMPT_CAP_FRACTION_NARRATION);
 
 const TEMPERATURE = 0;
 /**
@@ -216,29 +226,33 @@ async function readStructured<T>(
   prompt: string,
   schema: z.ZodType<T>,
   timeoutMs: number,
-  options: { maxOutputTokens?: number; system?: string } = {},
+  options: { maxOutputTokens?: number; system?: string; attemptCapMs?: number } = {},
 ): Promise<{ object: T; trace: LlmCallTrace | null }> {
   const state = llmModelState();
   if (!state.configured) throw new Error("llm_not_configured");
   if (state.provider === "google") {
     const chain = googleTransport();
     if (!chain) throw new Error("llm_not_configured");
-    const outcome = await chain.generate(timeoutMs, ({ modelId, abortSignal, thinking }) => {
-      const google = createGoogleGenerativeAI({ apiKey: chain.config.apiKey });
-      return generateObject({
-        model: google(modelId),
-        system: options.system ?? systemFor("both"),
-        schema,
-        prompt,
-        temperature: TEMPERATURE,
-        maxRetries: MAX_RETRIES,
-        abortSignal,
-        ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
-        ...(thinking
-          ? { providerOptions: { google: { thinkingConfig: { thinkingLevel: GEMINI_THINKING_LEVEL } } } }
-          : {}),
-      });
-    });
+    const outcome = await chain.generate(
+      timeoutMs,
+      ({ modelId, abortSignal, thinking }) => {
+        const google = createGoogleGenerativeAI({ apiKey: chain.config.apiKey });
+        return generateObject({
+          model: google(modelId),
+          system: options.system ?? systemFor("both"),
+          schema,
+          prompt,
+          temperature: TEMPERATURE,
+          maxRetries: MAX_RETRIES,
+          abortSignal,
+          ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
+          ...(thinking
+            ? { providerOptions: { google: { thinkingConfig: { thinkingLevel: GEMINI_THINKING_LEVEL } } } }
+            : {}),
+        });
+      },
+      { attemptCapMs: options.attemptCapMs },
+    );
     return { object: outcome.value.object, trace: outcome.trace };
   }
   const result = await withTimeout(timeoutMs, (abortSignal) =>
@@ -331,6 +345,7 @@ export async function chooseBridgeAnchors(
   try {
     const structured = await readStructured(anchorPrompt(closed), anchorSchema, ANCHOR_TIMEOUT_MS, {
       system: ANCHOR_SYSTEM,
+      attemptCapMs: ANCHOR_ATTEMPT_CAP_MS,
     });
     const object = structured.object;
     const ids = object.anchorIds;
@@ -572,7 +587,11 @@ export async function composeNarratives(input: {
       narrativePrompt(input.locale, input.plans, scope, repair),
       narrativeSchema(scope),
       LLM_TIMEOUT_MS,
-      { maxOutputTokens: NARRATIVE_MAX_TOKENS, system: systemFor(scope) },
+      {
+        maxOutputTokens: NARRATIVE_MAX_TOKENS,
+        system: systemFor(scope),
+        attemptCapMs: NARRATION_ATTEMPT_CAP_MS,
+      },
     );
     trace = mergeTrace(trace, structured.trace);
     const object = structured.object;
@@ -636,6 +655,8 @@ export type NarrationProbe = {
   latencyMs: number;
   reasoningTokens: number | null;
   valid: boolean;
+  /** Present only when outcome is 429; kind is read in memory, body never logged. */
+  rateLimitKind?: RateLimitKind;
 };
 
 /** One structured narration call for a single model. The fallback loop stays out of this. */
@@ -647,7 +668,9 @@ export async function probeNarrationModel(modelId: string, thinking: boolean): P
     anchors: fixture.seeds.map((seed) => ({ name: seed.raw })),
     slots: Object.fromEntries(pack.items.map((item) => [item.slot, item.name])),
   }));
-  if (!read.ok) return { model: modelId, outcome: read.off, latencyMs: 0, reasoningTokens: null, valid: false };
+  if (!read.ok) {
+    return { model: modelId, outcome: read.off, latencyMs: 0, reasoningTokens: null, valid: false };
+  }
   const started = Date.now();
   try {
     noteGeminiCall();
@@ -679,11 +702,21 @@ export async function probeNarrationModel(modelId: string, thinking: boolean): P
       valid,
     };
   } catch (error) {
-    const status =
+    const statusCode =
       error && typeof error === "object" && "statusCode" in error && typeof (error as { statusCode?: unknown }).statusCode === "number"
-        ? String((error as { statusCode: number }).statusCode)
-        : (geminiFailureCode(error) ?? "request");
-    return { model: modelId, outcome: status, latencyMs: Date.now() - started, reasoningTokens: null, valid: false };
+        ? (error as { statusCode: number }).statusCode
+        : undefined;
+    const outcome =
+      statusCode != null ? String(statusCode) : (geminiFailureCode(error) ?? "request");
+    const rateLimitKind = statusCode === 429 ? classifyRateLimit(error).kind : undefined;
+    return {
+      model: modelId,
+      outcome,
+      latencyMs: Date.now() - started,
+      reasoningTokens: null,
+      valid: false,
+      ...(rateLimitKind ? { rateLimitKind } : {}),
+    };
   }
 }
 

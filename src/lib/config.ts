@@ -48,3 +48,16 @@ export const PACK_IP_LIMITS = [
 
 /** Loose limit for cache hits and Deep cuts toggles. */
 export const CHEAP_IP_LIMIT = { ms: 60_000, max: 60 } as const;
+
+/**
+ * Per-attempt abort caps as a fraction of the call deadline. Anchors (6 s) → 3 s;
+ * narration (12 s) → 6 s. The chain uses `min(remaining, deadline * fraction)`.
+ */
+export const GEMINI_ATTEMPT_CAP_FRACTION_ANCHORS = 0.5;
+export const GEMINI_ATTEMPT_CAP_FRACTION_NARRATION = 0.5;
+
+/** Soft-demote a slow model for this long (in-memory only; not a quota cooldown). */
+export const GEMINI_SLOW_DEMOTION_MS = 10 * 60_000;
+
+/** Latency above this fraction of the per-attempt cap counts as slow (two in a row demotes). */
+export const GEMINI_SLOW_LATENCY_FRACTION = 0.8;

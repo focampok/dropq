@@ -3,8 +3,13 @@
  * The algorithm follows the proven chain (sticky preferred model, permanent
  * discard, transient backoff). DropQ adds one limit the original loop does
  * not have: a wall-clock deadline, because the anchor call sits before first paint.
+ * Each attempt is also capped so a hung model leaves room for the next one.
  */
 
+import {
+  GEMINI_SLOW_DEMOTION_MS,
+  GEMINI_SLOW_LATENCY_FRACTION,
+} from "@/lib/config";
 import { noteLlmHourlyCall } from "@/lib/rate-limit";
 
 export const TRANSIENT_HTTP_STATUS = new Set([429, 500, 502, 503, 504]);
@@ -47,6 +52,11 @@ export type ChainCall = {
 export type ChainHooks = {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+};
+
+export type GenerateOptions = {
+  /** Cap one attempt so a hung model cannot eat the whole deadline. */
+  attemptCapMs?: number;
 };
 
 type Env = Record<string, string | undefined>;
@@ -304,6 +314,8 @@ export type ChainSuccess<T> = {
  * succeeded. Models are not cached: the caller builds one per attempt.
  * Quota 429s put a model in an in-memory cooldown so the next call skips it
  * immediately instead of burning the deadline on retries that cannot succeed.
+ * Slow models are soft-demoted to the end of the order for a short window so
+ * the next request starts with a faster peer; they are still tried last.
  */
 export class GeminiChain {
   modeloPreferidoIdx = 0;
@@ -312,6 +324,10 @@ export class GeminiChain {
   private readonly cooldownUntil = new Map<string, number>();
   /** modelId → last classified quota kind that set the cooldown. */
   private readonly cooldownKind = new Map<string, RateLimitKind>();
+  /** modelId → epoch ms when soft demotion ends. */
+  private readonly demotedUntil = new Map<string, number>();
+  /** Consecutive slow (but successful or timed-out) answers per model. */
+  private readonly consecutiveSlow = new Map<string, number>();
 
   constructor(
     readonly config: GeminiConfig,
@@ -336,6 +352,11 @@ export class GeminiChain {
     return this.dominantCooldownKind(now);
   }
 
+  /** Test helper: whether a model is soft-demoted right now. */
+  isDemoted(modelId: string): boolean {
+    return this.inDemotion(modelId, this.now());
+  }
+
   private dominantCooldownKind(now: number): "per_day" | "per_minute" {
     let anyDay = false;
     for (const id of this.config.models) {
@@ -348,6 +369,44 @@ export class GeminiChain {
     return (this.cooldownUntil.get(modelId) ?? 0) > now;
   }
 
+  private inDemotion(modelId: string, now: number): boolean {
+    return (this.demotedUntil.get(modelId) ?? 0) > now;
+  }
+
+  private demote(modelId: string): void {
+    this.demotedUntil.set(modelId, this.now() + GEMINI_SLOW_DEMOTION_MS);
+    this.consecutiveSlow.set(modelId, 0);
+    const idx = this.config.models.indexOf(modelId);
+    if (idx >= 0 && this.modeloPreferidoIdx === idx) {
+      this.modeloPreferidoIdx = this.nextNonDemoted(idx) ?? ((idx + 1) % Math.max(1, this.config.models.length));
+    }
+  }
+
+  private nextNonDemoted(fromIdx: number): number | null {
+    const modelos = this.config.models;
+    const now = this.now();
+    for (let step = 1; step <= modelos.length; step += 1) {
+      const idx = (fromIdx + step) % modelos.length;
+      if (!this.inDemotion(modelos[idx]!, now)) return idx;
+    }
+    return null;
+  }
+
+  private noteSlow(modelId: string, attemptCapMs: number | undefined, latencyMs: number): void {
+    if (attemptCapMs == null || attemptCapMs <= 0) {
+      this.consecutiveSlow.set(modelId, 0);
+      return;
+    }
+    const slow = latencyMs > attemptCapMs * GEMINI_SLOW_LATENCY_FRACTION;
+    if (!slow) {
+      this.consecutiveSlow.set(modelId, 0);
+      return;
+    }
+    const next = (this.consecutiveSlow.get(modelId) ?? 0) + 1;
+    this.consecutiveSlow.set(modelId, next);
+    if (next >= 2) this.demote(modelId);
+  }
+
   private applyQuotaCooldown(modelId: string, error: unknown): RateLimitKind {
     const { kind, retryDelayMs } = classifyRateLimit(error);
     const now = this.now();
@@ -357,9 +416,14 @@ export class GeminiChain {
     return kind;
   }
 
-  async generate<T>(deadlineMs: number, run: (call: ChainCall) => Promise<T>): Promise<ChainSuccess<T>> {
+  async generate<T>(
+    deadlineMs: number,
+    run: (call: ChainCall) => Promise<T>,
+    options: GenerateOptions = {},
+  ): Promise<ChainSuccess<T>> {
     const started = this.now();
     const deadlineAt = started + deadlineMs;
+    const attemptCapMs = options.attemptCapMs;
     const modelos = this.config.models;
     const intentosMaximos = Math.max(1, this.config.retryAttempts);
     const presupuesto = intentosMaximos * Math.max(1, modelos.length);
@@ -385,19 +449,29 @@ export class GeminiChain {
     const blocked = this.quotaBlocked();
     if (blocked) return fail(new GeminiQuotaError(blocked));
 
+    /**
+     * Prefer non-demoted models (from the sticky index), then demoted ones so a
+     * slow model is still available when every peer has failed.
+     */
     const pick = (): number | null => {
       if (modelos.length === 0) return null;
       const now = this.now();
-      for (let step = 0; step < modelos.length; step += 1) {
-        const idx = (this.modeloPreferidoIdx + step) % modelos.length;
-        if (descartados.has(idx)) continue;
-        if (this.inCooldown(modelos[idx]!, now)) {
-          descartados.add(idx);
-          continue;
+      const tryPass = (allowDemoted: boolean): number | null => {
+        for (let step = 0; step < modelos.length; step += 1) {
+          const idx = (this.modeloPreferidoIdx + step) % modelos.length;
+          if (descartados.has(idx)) continue;
+          const id = modelos[idx]!;
+          if (this.inCooldown(id, now)) {
+            descartados.add(idx);
+            continue;
+          }
+          if (!allowDemoted && this.inDemotion(id, now)) continue;
+          if (allowDemoted && !this.inDemotion(id, now)) continue;
+          return idx;
         }
-        return idx;
-      }
-      return null;
+        return null;
+      };
+      return tryPass(false) ?? tryPass(true);
     };
 
     while (intentosGlobales < presupuesto) {
@@ -412,15 +486,23 @@ export class GeminiChain {
       }
       const modelId = modelos[idx]!;
       const remaining = deadlineAt - this.now();
+      const attemptMs =
+        attemptCapMs != null && attemptCapMs > 0
+          ? Math.min(remaining, attemptCapMs)
+          : remaining;
       const thinking = !this.thinkingOff.has(modelId);
       chainTried.push(modelId);
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), Math.max(0, remaining));
+      const attemptStarted = this.now();
+      const timer = setTimeout(() => controller.abort(), Math.max(0, attemptMs));
       try {
         noteGeminiCall();
         calls += 1;
         const value = await run({ modelId, abortSignal: controller.signal, thinking });
+        const latencyMs = this.now() - attemptStarted;
         this.modeloPreferidoIdx = idx;
+        // Demotion may move the sticky index off this model after two slow answers.
+        this.noteSlow(modelId, attemptCapMs, latencyMs);
         return { value, trace: trace(modelId) };
       } catch (error) {
         if (error instanceof GeminiBudgetError) return fail(error);
@@ -430,8 +512,15 @@ export class GeminiChain {
         }
         ultimoError = error;
         intentosGlobales += 1;
-        const abortedByDeadline = controller.signal.aborted && this.now() >= deadlineAt;
-        if (abortedByDeadline) return fail(new GeminiDeadlineError(error));
+        const aborted = controller.signal.aborted;
+        const pastDeadline = this.now() >= deadlineAt;
+        if (aborted && pastDeadline) return fail(new GeminiDeadlineError(error));
+        // Per-attempt cap: demote the slow model and leave room for the next one.
+        if (aborted && !pastDeadline) {
+          this.demote(modelId);
+          this.modeloPreferidoIdx = this.nextNonDemoted(idx) ?? nextLive(modelos.length, idx, descartados);
+          continue;
+        }
         if (thinking && isThinkingRejection(error)) {
           this.thinkingOff.add(modelId);
           continue;

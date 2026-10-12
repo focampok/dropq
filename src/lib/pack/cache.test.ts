@@ -1,10 +1,38 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   beginPackFlight,
+  narrationGradeReplaces,
+  packNarrationGrade,
   packSignature,
   resetPackSingleFlight,
+  stampCacheNarration,
   type PackCachePayload,
 } from "@/lib/pack/cache";
+
+function payloadWith(narrativeA: "llm" | "template", narrativeB: "llm" | "template"): PackCachePayload {
+  return {
+    city: "Houston",
+    eventKind: "tour",
+    locale: "en",
+    seeds: [],
+    packs: [
+      {
+        label: "A",
+        axis: "root",
+        narrative: "text",
+        coverage: { llm: { narrative: narrativeA, modelUsed: { narrative: narrativeA === "llm" ? "m1" : null } } },
+        items: [],
+      },
+      {
+        label: "B",
+        axis: "bridge",
+        narrative: "text",
+        coverage: { llm: { narrative: narrativeB, modelUsed: { narrative: narrativeB === "llm" ? "m1" : null } } },
+        items: [],
+      },
+    ],
+  };
+}
 
 describe("packSignature", () => {
   it("is stable regardless of seed entity id order", () => {
@@ -76,5 +104,54 @@ describe("cache TTL", () => {
     });
     expect(sig).toHaveLength(64);
     vi.useRealTimers();
+  });
+});
+
+describe("narration grade / overwrite rule", () => {
+  it("grades llm only when every plan is llm", () => {
+    expect(packNarrationGrade(payloadWith("llm", "llm"))).toBe("llm");
+    expect(packNarrationGrade(payloadWith("llm", "template"))).toBe("template");
+    expect(packNarrationGrade(payloadWith("template", "template"))).toBe("template");
+  });
+
+  it("lets llm replace template and equal grades replace; never template over llm", () => {
+    expect(narrationGradeReplaces("llm", "template")).toBe(true);
+    expect(narrationGradeReplaces("llm", "llm")).toBe(true);
+    expect(narrationGradeReplaces("template", "template")).toBe(true);
+    expect(narrationGradeReplaces("template", "llm")).toBe(false);
+  });
+
+  it("stamps coverage.cache.narration without dropping llm coverage", () => {
+    const stamped = stampCacheNarration(payloadWith("llm", "llm"), "llm");
+    for (const pack of stamped.packs) {
+      const coverage = pack.coverage as { cache?: { narration?: string }; llm?: { narrative?: string } };
+      expect(coverage.cache?.narration).toBe("llm");
+      expect(coverage.llm?.narrative).toBe("llm");
+    }
+  });
+
+  it("writePackCacheIfBetter keeps an llm row when the candidate is template", async () => {
+    const builtAt = new Date("2026-10-11T00:00:00.000Z");
+    const findUnique = vi.fn(async () => ({
+      signature: "sig",
+      payload: payloadWith("llm", "llm"),
+      builtAt,
+      qlooCalls: 0,
+      isPreset: true,
+    }));
+    const upsert = vi.fn();
+    vi.doMock("@/lib/db", () => ({ prisma: { packCache: { findUnique, upsert } } }));
+    vi.resetModules();
+    const { writePackCacheIfBetter } = await import("@/lib/pack/cache");
+    const result = await writePackCacheIfBetter({
+      signature: "sig",
+      payload: payloadWith("template", "template"),
+      qlooCalls: 1,
+      isPreset: true,
+    });
+    expect(result).toEqual({ wrote: false, builtAt, grade: "llm" });
+    expect(upsert).not.toHaveBeenCalled();
+    vi.doUnmock("@/lib/db");
+    vi.resetModules();
   });
 });

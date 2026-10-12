@@ -87,6 +87,49 @@ export async function readPackCache(
   };
 }
 
+export type NarrationGrade = "llm" | "template";
+
+/** `llm` only when every plan recorded an LLM narrative; otherwise `template`. */
+export function packNarrationGrade(payload: PackCachePayload): NarrationGrade {
+  const packs = payload.packs ?? [];
+  if (packs.length === 0) return "template";
+  return packs.every((pack) => {
+    const coverage = pack.coverage;
+    if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) return false;
+    const llm = (coverage as { llm?: { narrative?: unknown } }).llm;
+    return llm?.narrative === "llm";
+  })
+    ? "llm"
+    : "template";
+}
+
+/** True when `candidate` is equal or better than `existing` (`llm` beats `template`). */
+export function narrationGradeReplaces(candidate: NarrationGrade, existing: NarrationGrade): boolean {
+  if (candidate === "llm") return true;
+  return existing === "template";
+}
+
+/** Stamp `coverage.cache.narration` on every plan for warm / check readers. */
+export function stampCacheNarration(payload: PackCachePayload, grade: NarrationGrade): PackCachePayload {
+  return {
+    ...payload,
+    packs: payload.packs.map((pack) => {
+      const coverage =
+        pack.coverage && typeof pack.coverage === "object" && !Array.isArray(pack.coverage)
+          ? { ...(pack.coverage as Record<string, unknown>) }
+          : {};
+      const prevCache =
+        coverage.cache && typeof coverage.cache === "object" && !Array.isArray(coverage.cache)
+          ? { ...(coverage.cache as Record<string, unknown>) }
+          : {};
+      return {
+        ...pack,
+        coverage: { ...coverage, cache: { ...prevCache, narration: grade } } as Prisma.JsonValue,
+      };
+    }),
+  };
+}
+
 export async function writePackCache(input: {
   signature: string;
   payload: PackCachePayload;
@@ -111,6 +154,29 @@ export async function writePackCache(input: {
     },
   });
   return builtAt;
+}
+
+/**
+ * Never replace an LLM-narrated preset with a template one. Equal grade → newer wins.
+ * Returns whether the row was written.
+ */
+export async function writePackCacheIfBetter(input: {
+  signature: string;
+  payload: PackCachePayload;
+  qlooCalls: number;
+  isPreset: boolean;
+}): Promise<{ wrote: boolean; builtAt: Date; grade: NarrationGrade }> {
+  const grade = packNarrationGrade(input.payload);
+  const stamped = stampCacheNarration(input.payload, grade);
+  const existing = await prisma.packCache.findUnique({ where: { signature: input.signature } });
+  if (existing) {
+    const existingGrade = packNarrationGrade(existing.payload as unknown as PackCachePayload);
+    if (!narrationGradeReplaces(grade, existingGrade)) {
+      return { wrote: false, builtAt: existing.builtAt, grade: existingGrade };
+    }
+  }
+  const builtAt = await writePackCache({ ...input, payload: stamped });
+  return { wrote: true, builtAt, grade };
 }
 
 /**

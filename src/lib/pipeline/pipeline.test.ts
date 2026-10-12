@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { anchorsForRule, deterministicAnchors, validAnchorIds } from "@/lib/pipeline/anchors";
-import { substituteTokens, tokensIn, validateNarrative } from "@/lib/pipeline/llm";
+import {
+  articleBeforeToken,
+  substituteTokens,
+  tokensIn,
+  validateNarrative,
+} from "@/lib/pipeline/llm";
 import { DEMO_PRESETS } from "@/lib/presets";
 import {
   BRIDGE_ANCHOR_RULE,
@@ -536,5 +541,40 @@ describe("Bridge location signal", () => {
     expect(deep.signalLocationQuery).toBe(plain.signalLocationQuery);
     expect(deep.filterPopularityMax).toBe(0.9);
     expect(locationKey(deep)).not.toBe(locationKey(plain));
+  });
+});
+
+describe("Spanish narration grammar", () => {
+  const plan = {
+    label: "B" as const,
+    city: "Houston",
+    anchors: [{ name: "Bad Bunny" }, { name: "Karol G" }],
+    slots: { watch: "Gentefied", listen: "French Montana", wear: "Nike Training Club", do: "House of Blues" },
+  };
+
+  it("rejects a contraction or article before a name token in Spanish", () => {
+    for (const bad of [
+      "Al [[wear]] puesto, iremos a [[do]].",
+      "Del [[listen]] a [[do]].",
+      "Con [[listen]] y la [[watch]], esta noche en [[city]].",
+      "Por el [[watch]] llegamos.",
+      "Los [[listen]] abren la noche.",
+    ]) {
+      expect(validateNarrative(bad, plan, "es", 280), bad).toBe("article_before_token");
+    }
+  });
+
+  it("accepts Spanish that names things without articles", () => {
+    expect(validateNarrative("Con [[wear]] puesto, iremos a [[do]].", plan, "es", 280)).toBeNull();
+    expect(validateNarrative("De [[listen]] a [[do]], esta noche en [[city]].", plan, "es", 280)).toBeNull();
+    expect(validateNarrative("En [[city]] suena [[listen]] con [[watch]].", plan, "es", 280)).toBeNull();
+  });
+
+  it("leaves the same sentence untouched in English", () => {
+    expect(validateNarrative("Al [[wear]] puesto, iremos a [[do]].", plan, "en", 280)).toBeNull();
+    expect(articleBeforeToken("Al [[wear]] puesto")).toBe(true);
+    expect(articleBeforeToken("Con [[wear]] puesto")).toBe(false);
+    // "La" inside a word is not an article.
+    expect(articleBeforeToken("LaLa [[wear]]")).toBe(false);
   });
 });

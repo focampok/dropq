@@ -103,6 +103,7 @@ export type LlmFailure =
   | "url"
   | "wrong_language"
   | "no_token"
+  | "article_before_token"
   | "empty"
   | "rate_limited"
   | "quota_daily"
@@ -440,6 +441,20 @@ const LANGUAGE_STOPWORDS: Record<Locale, string[]> = {
 };
 
 /**
+ * Spanish names take no article or contraction: "con [[wear]]", "de [[listen]]",
+ * "en [[do]]". Glued to a token they produced "Al Nike Training Club puesto, iremos a …".
+ * The check is the same in English, where an article before a token is simply ungrammatical
+ * too, but the rule is only applied where the locale asks for it.
+ */
+const ARTICLES = ["al", "del", "el", "la", "los", "las"] as const;
+
+export function articleBeforeToken(text: string): boolean {
+  return ARTICLES.some((article) =>
+    new RegExp(`(^|[^\\p{L}])${article}\\s*\\[\\[`, "iu").test(text),
+  );
+}
+
+/**
  * Conservative: only rejects when the text looks like the other language and shows
  * no trace of the requested one, so a legitimate two-word line survives.
  */
@@ -474,6 +489,7 @@ export function validateNarrative(
   // With tokens available, prose that names things itself is exactly the failure the
   // placeholder design exists to prevent, so require at least one token.
   if (requireToken && tokens.length > 0 && used.length === 0) return "no_token";
+  if (locale === "es" && articleBeforeToken(text)) return "article_before_token";
   if (wrongLanguage(text, locale)) return "wrong_language";
   return null;
 }
@@ -523,6 +539,12 @@ function narrativePrompt(
     "The headline is a separate label of at most 40 characters, never a copy of the narrative.",
     "Each token at most once per field. No URLs.",
   ];
+  if (locale === "es") {
+    lines.push(
+      "Escribe los nombres sin artículo ni contracción: \"con [[wear]]\", \"de [[listen]]\", \"en [[do]]\".",
+      'Nunca "al [[wear]]", "la [[listen]]", "el [[watch]]" ni "del [[do]]".',
+    );
+  }
   if (repair) lines.push(`The previous attempt was rejected (${repair}); fix exactly that.`);
   lines.push(`Only these tokens exist: ${JSON.stringify(plans.map((plan) => ({ [plan.label]: allowedTokens(plan) })))}`);
   lines.push(

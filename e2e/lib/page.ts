@@ -54,7 +54,7 @@ export type CardDom = {
   name: string;
   chosenForCity: boolean;
   prose: string | null;
-  image: { kind: "img" | "placeholder" | "none"; loaded: boolean };
+  image: { kind: "img" | "placeholder" | "none"; loaded: boolean; complete: boolean };
   rows: { label: string; value: string; tags: string[]; hasToggle: boolean; toggleLabel: string | null }[];
 };
 
@@ -238,10 +238,14 @@ export async function scrape(page: Page): Promise<SectionDom[]> {
             chosenForCity,
             prose: proseEl?.textContent?.trim() ?? null,
             image: img
-              ? { kind: "img" as const, loaded: (img as HTMLImageElement).naturalWidth > 0 }
+              ? {
+                  kind: "img" as const,
+                  loaded: (img as HTMLImageElement).naturalWidth > 0,
+                  complete: (img as HTMLImageElement).complete,
+                }
               : placeholder
-                ? { kind: "placeholder" as const, loaded: true }
-                : { kind: "none" as const, loaded: false },
+                ? { kind: "placeholder" as const, loaded: true, complete: true }
+                : { kind: "none" as const, loaded: false, complete: false },
             rows,
           };
         }),

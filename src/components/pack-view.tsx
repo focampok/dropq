@@ -228,7 +228,14 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
               </>
             )}
             <dt className="text-ink/50">{dictionary.pack.confidence}</dt>
-            <dd>{dictionary.pack.confidenceValue[item.confidence]}</dd>
+            <dd>
+              {dictionary.pack.confidenceValue[item.confidence]}
+              {item.confidence === "low" ? (
+                <span className="ml-2 uppercase tracking-[0.14em] text-stamp">
+                  {dictionary.pack.weakSignal}
+                </span>
+              ) : null}
+            </dd>
             {tags.length > 0 ? (
               <>
                 <dt className="text-ink/50">{dictionary.pack.hitTags}</dt>
@@ -251,11 +258,6 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
                 <dd>
                   {anchor.sharedTags.length > 0 ? (
                     <TagList tags={anchor.sharedTags} locale={locale} />
-                  ) : null}
-                  {anchor.confidence === "low" ? (
-                    <span className="ml-2 uppercase tracking-[0.14em] text-stamp">
-                      {dictionary.pack.weakSignal}
-                    </span>
                   ) : null}
                 </dd>
               </>

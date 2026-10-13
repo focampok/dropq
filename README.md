@@ -104,6 +104,33 @@ The pack-cache signature includes `PIPELINE_VERSION` (`src/lib/pipeline/config.t
 | `LLM_CALLS_PER_HOUR` | Soft hourly Gemini cap |
 | `PACK_CACHE_TTL_HOURS` | Pack cache TTL (presets use 72h) |
 
+## End-to-end tests
+
+`pnpm e2e` drives the built app in a real Chromium and runs the whole checklist — the three
+cached presets, the evidence panel, the live LLM path, Deep cuts, sessions, limits, language,
+layout and the server surface — printing `PASS`, `FAIL` or `SKIP: <reason>` per check and
+writing `docs/e2e/report.html`, `docs/e2e/summary.json`, `docs/e2e/run.log` and the
+screenshots (all under the git-ignored `docs/`). The process exits non-zero when any check
+fails; a SKIP is never a pass.
+
+- **local** (default): builds if `.next` is missing, starts `next start` on port 3311 with
+  the normal `.env`, runs every check (including the three custom live generations that
+  spend Qloo and Gemini), then stops the server. It uses the local database and clears every
+  pack-cache row except the six warmed presets, so a re-run is repeatable. The custom
+  scenarios reuse the preset seeds with another allowed city, so seed resolution stays
+  cached and only the insights are live.
+- **prod**: `E2E_BASE_URL=https://<host> pnpm e2e -- --profile prod` runs only the
+  `prod-safe` checks against a deployment. It starts no process and touches no local
+  database, and it performs no live generation — only cached preset loads, which spend no
+  Qloo or Gemini. Without `E2E_BASE_URL` the command prints `E2E_BASE_URL required` and
+  exits non-zero without touching the network.
+- `pnpm e2e:report` regenerates `report.html` and `summary.json` from the last run.
+
+Cost is capped by counters that abort the expensive work: 45 Gemini calls and 70 Qloo
+requests per run. Without a usable Chromium every browser check is `SKIP: no browser` and
+the API-level checks still run; the suite uses the same browser `pnpm verify:ui` uses and
+never downloads one.
+
 ## Limitations
 
 - Free-tier Qloo and Gemini quotas; the app refuses custom live packs when the monthly reserve or daily soft cap is hit (presets and cached packs keep working).

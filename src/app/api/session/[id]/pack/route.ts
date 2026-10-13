@@ -46,11 +46,13 @@ export async function POST(request: Request, context: RouteContext) {
   if (gate instanceof NextResponse) return gate;
 
   try {
+    let requestedLocale: string | null = null;
     const body = await readJsonBody(request);
     if (!body.ok) return body.response;
     if (body.value !== null) {
       const parsed = packInputSchema.safeParse(body.value);
       if (!parsed.success) return jsonError("invalid_body", 400);
+      requestedLocale = parsed.data.lang ?? parsed.data.locale ?? null;
     }
 
     const session = await prisma.session.findUnique({
@@ -60,6 +62,15 @@ export async function POST(request: Request, context: RouteContext) {
     if (!session) return jsonError("not_found", 404);
     if (qlooApiKey() && qlooQuota().blocked) {
       return NextResponse.json(quotaBody, { status: 503 });
+    }
+    // A language toggle asks for the other stored row; follow it so the narration and the
+    // UI chrome stay in the same language.
+    if (requestedLocale && requestedLocale !== session.locale) {
+      await prisma.session.update({
+        where: { id },
+        data: { locale: requestedLocale, lastActiveAt: new Date() },
+      });
+      session.locale = requestedLocale;
     }
 
     const locale = session.locale === "es" ? "es" : "en";

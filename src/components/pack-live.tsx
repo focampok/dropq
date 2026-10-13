@@ -110,7 +110,14 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
 
     async function run(signal: AbortSignal) {
       try {
-        const response = await fetch(`/api/session/${sessionId}/pack`, { method: "POST", signal });
+        // The requested language travels with the request so a language toggle serves the
+        // stored per-language pack instead of leaving the narration in the build language.
+        const response = await fetch(`/api/session/${sessionId}/pack`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lang: locale }),
+          signal,
+        });
         if (response.status === 429) {
           setError(dictionary.pack.rateLimited);
           return;

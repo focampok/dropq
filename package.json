@@ -22,7 +22,9 @@
     "verify:images": "tsx scripts/verify-images.ts",
     "verify:ui": "tsx scripts/verify-ui.ts",
     "verify:local": "tsx scripts/verify-local.ts",
-    "probe:llm": "tsx scripts/probe-llm.ts"
+    "probe:llm": "tsx scripts/probe-llm.ts",
+    "e2e": "tsx e2e/run.ts",
+    "e2e:report": "tsx e2e/run.ts --report"
   },
   "dependencies": {
     "@ai-sdk/google": "2.0.102",
@@ -41,6 +43,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@eslint/eslintrc": "^3.3.1",
     "@tailwindcss/postcss": "^4.1.13",
     "@types/node": "^22.18.6",

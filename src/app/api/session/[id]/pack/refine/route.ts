@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
+import { demoRestingResponse } from "@/lib/abuse";
 import { prisma } from "@/lib/db";
 import { jsonError, readJsonBody, safeServerError } from "@/lib/http";
-import { qlooApiKey } from "@/lib/qloo/config";
+import { qlooApiKey, qlooMocksAllowed } from "@/lib/qloo/config";
 import { qlooQuota } from "@/lib/qloo/client";
 import { QlooQuotaError } from "@/lib/qloo/types";
 import { enforceRateLimit } from "@/lib/rate-limit";
@@ -32,6 +33,9 @@ export async function POST(request: Request, context: RouteContext) {
 
     const session = await prisma.session.findUnique({ where: { id } });
     if (!session) return jsonError("not_found", 404);
+    if (!qlooApiKey() && !qlooMocksAllowed()) {
+      return demoRestingResponse();
+    }
     if (qlooApiKey() && qlooQuota().blocked) {
       return NextResponse.json(quotaBody, { status: 503 });
     }

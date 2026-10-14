@@ -1,6 +1,6 @@
 import type { EventKind, Prisma, SeedDomain } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { qlooApiKey } from "@/lib/qloo/config";
+import { qlooApiKey, qlooMocksAllowed } from "@/lib/qloo/config";
 import { entityTagNames, search } from "@/lib/qloo/client";
 import { cachedEntityTags, cachedInsights, cachedSearch } from "@/lib/qloo/cache";
 import { QlooQuotaError, type QlooInsightHit } from "@/lib/qloo/types";
@@ -238,7 +238,11 @@ export async function runPipeline(
   signal?: AbortSignal,
   options?: { bridgeVariant?: "a" | "deep"; anchorRule?: "A" | "B" },
 ): Promise<{ packIds: string[] }> {
-  if (!qlooApiKey()) return persistMock(sessionId, emit);
+  if (!qlooApiKey()) {
+    // Production never fabricates packs from fixtures; the pack route refuses first.
+    if (!qlooMocksAllowed()) throw new Error("qloo_unavailable");
+    return persistMock(sessionId, emit);
+  }
   const started = Date.now();
   const expired = () => Boolean(signal?.aborted) || Date.now() - started > BUDGET_MS;
   const session = await prisma.session.findUnique({

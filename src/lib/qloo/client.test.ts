@@ -7,7 +7,7 @@ import {
   analysisCompare,
   acquireQlooSlot,
 } from "@/lib/qloo/client";
-import { QlooQuotaError } from "@/lib/qloo/types";
+import { QlooGuardError, QlooQuotaError } from "@/lib/qloo/types";
 
 // Keep the suite hermetic: the real counter talks to Postgres. The pure helpers
 // stay real so the guard's arithmetic is still exercised.
@@ -22,6 +22,7 @@ vi.mock("@/lib/qloo/usage", async (importOriginal) => {
 
 const originalKey = process.env.QLOO_API_KEY;
 const originalBase = process.env.QLOO_BASE_URL;
+const originalNodeEnv = process.env.NODE_ENV;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -29,11 +30,14 @@ afterEach(() => {
   else process.env.QLOO_API_KEY = originalKey;
   if (originalBase === undefined) delete process.env.QLOO_BASE_URL;
   else process.env.QLOO_BASE_URL = originalBase;
+  if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = originalNodeEnv;
   resetQlooRuntime();
 });
 
 describe("qloo client", () => {
   it("returns a preset fixture and does not call the network when the key is empty", async () => {
+    process.env.NODE_ENV = "test";
     process.env.QLOO_API_KEY = "";
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const result = await search({ query: "  bad bunny " });
@@ -47,6 +51,17 @@ describe("qloo client", () => {
     expect((await tags({ query: "tour" })).results).toEqual([]);
     expect((await insights({ filterType: "urn:entity:place" })).results).toEqual([]);
     expect((await analysisCompare({ a: ["a"], b: ["b"] })).results).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("never returns mock provenance in production when the key is empty", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.QLOO_API_KEY = "";
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await expect(search({ query: "bad bunny" })).rejects.toBeInstanceOf(QlooGuardError);
+    await expect(tags({ query: "tour" })).rejects.toBeInstanceOf(QlooGuardError);
+    await expect(insights({ filterType: "urn:entity:place" })).rejects.toBeInstanceOf(QlooGuardError);
+    await expect(analysisCompare({ a: ["a"], b: ["b"] })).rejects.toBeInstanceOf(QlooGuardError);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

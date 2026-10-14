@@ -1,5 +1,5 @@
 import { QLOO_HARD_RESERVE } from "@/lib/config";
-import { qlooApiKey, resolveQlooBaseUrl } from "@/lib/qloo/config";
+import { qlooApiKey, qlooMocksAllowed, resolveQlooBaseUrl } from "@/lib/qloo/config";
 import { fixtureSearch } from "@/lib/qloo/fixtures";
 import { countQlooRequest, readMonthCount, remainingFrom } from "@/lib/qloo/usage";
 import {
@@ -359,11 +359,17 @@ function toTag(value: unknown): QlooTag | null {
   return { id: id ?? name, name, raw: value };
 }
 
+function requireLiveKeyOrMock(): "mock" | "live" {
+  if (qlooApiKey()) return "live";
+  if (qlooMocksAllowed()) return "mock";
+  throw new QlooGuardError("QLOO_API_KEY is required in production");
+}
+
 export async function search(args: {
   query: string;
   type?: string;
 }): Promise<QlooResult<QlooEntity[]>> {
-  if (!qlooApiKey()) {
+  if (requireLiveKeyOrMock() === "mock") {
     const fixture = fixtureSearch(args.query);
     return {
       provenance: "mock",
@@ -405,7 +411,7 @@ export function entityTagNames(raw: unknown): string[] {
 export async function entitiesByIds(ids: string[]): Promise<QlooResult<QlooEntity[]>> {
   const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
   if (unique.length === 0) return { provenance: "qloo", results: [] };
-  if (!qlooApiKey()) return { provenance: "mock", results: [] };
+  if (requireLiveKeyOrMock() === "mock") return { provenance: "mock", results: [] };
   const params = new URLSearchParams();
   params.set("entity_ids", serializeArray(unique));
   const response = await qlooGet("/entities", params);
@@ -426,7 +432,7 @@ export async function entitiesByIds(ids: string[]): Promise<QlooResult<QlooEntit
 }
 
 export async function tags(args: { query: string; parentsTypes?: string }): Promise<QlooResult<QlooTag[]>> {
-  if (!qlooApiKey()) {
+  if (requireLiveKeyOrMock() === "mock") {
     return { provenance: "mock", results: [] };
   }
   const response = await perform("/v2/tags", toTagsParams(args));
@@ -447,7 +453,7 @@ export async function insights(
   args: InsightsParams,
   timeoutMs = TIMEOUT_MS,
 ): Promise<QlooResult<QlooInsightHit[]>> {
-  if (!qlooApiKey()) {
+  if (requireLiveKeyOrMock() === "mock") {
     return { provenance: "mock", results: [] };
   }
   const response = await perform("/v2/insights", toInsightsSearchParams(args), timeoutMs);
@@ -468,7 +474,7 @@ export async function analysisCompare(args: {
   a: string[];
   b: string[];
 }): Promise<QlooResult<unknown>> {
-  if (!qlooApiKey()) {
+  if (requireLiveKeyOrMock() === "mock") {
     return { provenance: "mock", results: null };
   }
   const response = await perform("/v2/analysis/compare", toCompareSearchParams(args));

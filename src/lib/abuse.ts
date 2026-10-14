@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { QLOO_CUSTOM_RESERVE } from "@/lib/config";
 import { liveGenerationAllowed, noteLiveGeneration } from "@/lib/rate-limit";
 import { qlooQuota } from "@/lib/qloo/client";
+import { qlooApiKey, qlooMocksAllowed } from "@/lib/qloo/config";
 import { matchesPresetSeeds } from "@/lib/presets";
 
 export const demoRestingBody = {
@@ -20,10 +21,14 @@ export function isPresetSession(seeds: { rawText: string }[]): boolean {
 }
 
 /**
- * Refuse custom live generations when the monthly reserve or the daily soft cap is hit.
- * Cached packs and presets keep working (caller skips this check for those).
+ * Refuse live generations that must not run. Cached hits never reach this.
+ * In production without a Qloo key, every live build is refused (no mock path).
+ * Otherwise only custom (non-preset) builds are refused on reserve / daily cap.
  */
 export function refuseCustomLive(seeds: { rawText: string }[]): NextResponse | null {
+  if (!qlooApiKey() && !qlooMocksAllowed()) {
+    return demoRestingResponse();
+  }
   if (isPresetSession(seeds)) return null;
   const quota = qlooQuota();
   if (quota.remaining !== undefined && quota.remaining < QLOO_CUSTOM_RESERVE) {

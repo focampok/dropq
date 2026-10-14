@@ -6,9 +6,10 @@
  *   pnpm e2e -- --profile prod   # against E2E_BASE_URL: no local DB or process; prod-safe
  *                                # checks only, no live generation.
  *   pnpm e2e:report              # regenerate report.html + summary.json from the last run.
+ *   pnpm e2e -- --only K1        # run just the named check(s), skipping the rest.
  *
  * Exit code is non-zero when any check FAILs. SKIPs (quota, no browser, profile) are
- * allowed and always reported with a reason.
+ * allowed and always reported with a reason; a check that reports nothing at all is a FAIL.
  */
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -36,6 +37,100 @@ const BROWSER_CHECKS: Record<string, string[]> = {
   live: ["C1", "C2", "C3", "D1"],
   a11y: ["K1"],
 };
+
+/** Checks that run over plain HTTP, no browser needed. */
+const API_CHECKS: Record<string, string[]> = {
+  server: ["J1", "J2", "J3"],
+  sessions: ["F1", "F2"],
+  "limits-api": ["G1", "G4"],
+};
+
+/**
+ * Every id the suite is expected to record, derived from the lists that drive the
+ * run so the two cannot drift apart.
+ */
+const EXPECTED_IDS: string[] = [
+  ...Object.values(API_CHECKS).flat(),
+  ...Object.values(BROWSER_CHECKS).flat(),
+];
+
+/** A SKIP is only acceptable when it carries one of these reasons. */
+const ALLOWED_SKIP_REASONS = new Set(["budget", "no browser", "profile", "quota", "axe-not-installed"]);
+
+/**
+ * Cross-check what was recorded against the manifest.
+ *
+ * A check that quietly reports nothing looks identical to a passing run in the
+ * summary, so a missing id is a FAIL here rather than an absence. Every SKIP has
+ * to be listed, which is what makes "a SKIP is never a pass" checkable.
+ */
+function auditCoverage(recorder: Recorder, log: (line: string) => void, expectedIds: string[]): void {
+  // Snapshot: recording a FAIL below appends to this array.
+  const results = [...recorder.results];
+  const seen = new Map<string, number>();
+  for (const result of results) {
+    seen.set(result.id, (seen.get(result.id) ?? 0) + 1);
+  }
+
+  for (const id of expectedIds) {
+    const count = seen.get(id) ?? 0;
+    if (count === 0) {
+      log(`!! ${id} did not report; recording FAIL (unlisted: no result)`);
+      recorder.record({
+        id,
+        name: "coverage",
+        profile: recorder.profile,
+        cost: "free",
+        status: "FAIL",
+        ms: 0,
+        screenshots: [],
+        details: ["unlisted: check produced no result"],
+      });
+    } else if (count > 1) {
+      log(`!! ${id} reported ${count} times; recording FAIL (duplicate)`);
+      recorder.record({
+        id,
+        name: "coverage",
+        profile: recorder.profile,
+        cost: "free",
+        status: "FAIL",
+        ms: 0,
+        screenshots: [],
+        details: [`duplicate: ${count} results for one id`],
+      });
+    }
+  }
+
+  const expected = new Set(EXPECTED_IDS);
+  for (const result of results) {
+    if (!expected.has(result.id)) {
+      log(`!! ${result.id} is not in the manifest; recording FAIL (unlisted id)`);
+      recorder.record({
+        id: result.id,
+        name: "coverage",
+        profile: recorder.profile,
+        cost: "free",
+        status: "FAIL",
+        ms: 0,
+        screenshots: [],
+        details: ["unlisted: id is not in the manifest"],
+      });
+    }
+    if (result.status === "SKIP" && !ALLOWED_SKIP_REASONS.has(result.reason ?? "")) {
+      log(`!! ${result.id} skipped with an unlisted reason "${result.reason ?? ""}"`);
+      recorder.record({
+        id: result.id,
+        name: "coverage",
+        profile: recorder.profile,
+        cost: "free",
+        status: "FAIL",
+        ms: 0,
+        screenshots: [],
+        details: [`unlisted skip reason: ${result.reason ?? "(none)"}`],
+      });
+    }
+  }
+}
 
 function argValue(flag: string): string | null {
   const index = process.argv.indexOf(flag);
@@ -67,6 +162,17 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
+
+  // `--only K1` or `--only A1,B1`: run just those checks. Modules are the unit of
+  // selection for the browser groups, so selecting one id from a module runs that
+  // module's checks; the coverage audit is then scoped to what was asked for.
+  const only = (argValue("--only") ?? "")
+    .split(",")
+    .map((id) => id.trim().toUpperCase())
+    .filter(Boolean);
+  const selection = only.length > 0 ? new Set(only) : null;
+  const selected = (ids: string[]): string[] =>
+    selection ? ids.filter((id) => selection.has(id)) : ids;
 
   const runStart = Date.now();
   let server: { base: string; stop: () => void } | null = null;
@@ -120,12 +226,14 @@ async function main(): Promise<void> {
 
     let budgetStopped = false;
     const guard = async (label: string, ids: string[], run: () => Promise<void>, costly = false): Promise<void> => {
+      const wanted = selected(ids);
+      if (wanted.length === 0) return;
       if (budgetStopped && costly) {
-        for (const id of ids) skipCheck(recorder, id, label, "budget");
+        for (const id of wanted) skipCheck(recorder, id, label, "budget");
         return;
       }
       if (!browser) {
-        for (const id of ids) skipCheck(recorder, id, label, "no browser");
+        for (const id of wanted) skipCheck(recorder, id, label, "no browser");
         return;
       }
       try {
@@ -134,12 +242,12 @@ async function main(): Promise<void> {
         if (error instanceof BudgetAbort) {
           budgetStopped = true;
           log(`!! budget counter aborted the run: ${error.message}`);
-          for (const id of ids) skipCheck(recorder, id, label, "budget");
+          for (const id of wanted) skipCheck(recorder, id, label, "budget");
           return;
         }
         const message = error instanceof Error ? error.message : String(error);
         log(`!! ${label} threw: ${message}`);
-        for (const id of ids) {
+        for (const id of wanted) {
           if (!recorder.results.some((result) => result.id === id)) {
             recorder.record({ id, name: label, profile, cost: "free", status: "FAIL", ms: 0, screenshots: [], details: [`threw: ${message}`] });
           }
@@ -148,9 +256,9 @@ async function main(): Promise<void> {
     };
 
     // Cheap API checks first, then the browser flows, then the quota-spending ones.
-    await guard("server", ["J1", "J2", "J3"], () => runServerChecks(ctx));
-    await guard("sessions", ["F1", "F2"], () => runSessionChecks(ctx));
-    await guard("limits-api", ["G1", "G4"], () => runLimitApiChecks(ctx));
+    await guard("server", API_CHECKS.server!, () => runServerChecks(ctx));
+    await guard("sessions", API_CHECKS.sessions!, () => runSessionChecks(ctx));
+    await guard("limits-api", API_CHECKS["limits-api"]!, () => runLimitApiChecks(ctx));
     if (profile === "prod") skipCheck(recorder, "G4", "limits-api", "profile");
     await guard("limits-messages", BROWSER_CHECKS.messages!, () => runLimitMessageChecks(ctx));
     await guard("presets", BROWSER_CHECKS.presets!, () => runPresetChecks(ctx));
@@ -165,6 +273,10 @@ async function main(): Promise<void> {
     await guard("a11y", BROWSER_CHECKS.a11y!, () => runA11yChecks(ctx));
 
     if (profile === "local") await disconnect().catch(() => undefined);
+
+    // Nothing may go unreported: a check that never ran, an id outside the
+    // manifest, or a SKIP with an unknown reason all become FAILs here.
+    auditCoverage(recorder, log, selection ? EXPECTED_IDS.filter((id) => selection.has(id)) : EXPECTED_IDS);
 
     const summary: Summary = buildSummary({
       profile,

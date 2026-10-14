@@ -183,7 +183,11 @@ function checkA1(
   input: { preset: string; locale: "en" | "es"; visibleMs: number; noteText: string | null; before: SectionDom[]; dictionary: ReturnType<typeof dict> },
 ): void {
   const where = `${input.preset}/${input.locale}`;
-  if (input.visibleMs > 1500) acc.fail(`${where}: pack visible in ${input.visibleMs} ms (>1500)`);
+  // A preset that is not in PackCache is built live (8–20 s), which is exactly
+  // what a missing warm looks like from the outside.
+  if (input.visibleMs > 1500) {
+    acc.fail(`${where}: preset not warm: run the remote warm (pack visible in ${input.visibleMs} ms, >1500)`);
+  }
   const plans = byPlan(input.before, input.locale);
   for (const label of ["A", "B"] as const) {
     const section = plans[label];
@@ -198,7 +202,9 @@ function checkA1(
   const note = input.noteText ?? "";
   const label = input.dictionary.pack.cachedNote.replace("{when}", "").trim();
   if (!note.includes(label.replace(/·\s*$/, "").trim())) {
-    acc.fail(`${where}: cached note missing (${JSON.stringify(note.slice(0, 80))})`);
+    acc.fail(
+      `${where}: preset not warm: run the remote warm (cached note missing, ${JSON.stringify(note.slice(0, 80))})`,
+    );
   } else if (!/(just now|min ago|h ago|d ago|hace un momento|hace \d+ (min|h|d))/.test(note)) {
     acc.fail(`${where}: cached note has no relative time (${note.slice(0, 80)})`);
   }

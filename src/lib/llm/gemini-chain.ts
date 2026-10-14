@@ -27,6 +27,24 @@ export const GEMINI_DAILY_QUOTA_TZ = "America/Los_Angeles";
 
 export type RateLimitKind = "per_day" | "per_minute" | "unknown";
 
+/**
+ * Why a model is being skipped without a call, for the rest of the process:
+ * - `quota_daily` — a 429 that named a per-day quota; until the next Pacific midnight.
+ * - `quota_minute` — a 429 (or `Retry-After`) that is only rate limiting; for that
+ *   duration, default 60 s, capped at 5 min.
+ * - `discarded` — a permanent error (404, 401, 403, a rejected prompt): never tried again.
+ */
+export type ModelSkipKind = "quota_daily" | "quota_minute" | "discarded";
+
+export type ModelSkip = {
+  model: string;
+  skipped: ModelSkipKind;
+  /** Epoch ms when the skip ends; `Infinity` for a permanent discard. */
+  until: number;
+  /** Only for `quota_daily`: the epoch ms it resets. */
+  resetMs?: number;
+};
+
 export type GeminiConfig = {
   apiKey: string;
   models: string[];
@@ -114,7 +132,7 @@ export class GeminiQuotaError extends Error {
 }
 
 const PER_MINUTE_DEFAULT_MS = 60_000;
-const PER_MINUTE_CAP_MS = 10 * 60_000;
+const PER_MINUTE_CAP_MS = 5 * 60_000;
 
 /**
  * Inspect a 429 in memory only. Never log the body: callers may read the
@@ -175,6 +193,19 @@ function cooldownMsFor(kind: RateLimitKind, retryDelayMs: number | null, nowMs: 
   if (kind === "per_day") return Math.max(0, nextPacificMidnightMs(nowMs) - nowMs);
   const suggested = retryDelayMs != null && Number.isFinite(retryDelayMs) ? retryDelayMs : PER_MINUTE_DEFAULT_MS;
   return Math.min(Math.max(suggested, 0), PER_MINUTE_CAP_MS);
+}
+
+/** The skip a 429 puts a model in, and until when. Unclassified rate limits cool per-minute. */
+export function skipForRateLimit(
+  kind: RateLimitKind,
+  retryDelayMs: number | null,
+  nowMs: number,
+): { kind: "quota_daily" | "quota_minute"; until: number; resetMs?: number } {
+  if (kind === "per_day") {
+    const until = nextPacificMidnightMs(nowMs);
+    return { kind: "quota_daily", until, resetMs: until };
+  }
+  return { kind: "quota_minute", until: nowMs + cooldownMsFor(kind, retryDelayMs, nowMs) };
 }
 
 let geminiCalls = 0;
@@ -291,9 +322,14 @@ export function mergeTrace(left: LlmCallTrace | null | undefined, right: LlmCall
 
 const TRACE = Symbol("geminiTrace");
 
+/**
+ * Attach the trace to an error. `configurable` matters: the chain can throw the same
+ * error object twice — a discarded model's error is thrown again on the next call — and
+ * a non-configurable property would make that second attach a TypeError instead.
+ */
 export function attachTrace(error: unknown, trace: LlmCallTrace): unknown {
   if (error && typeof error === "object") {
-    Object.defineProperty(error, TRACE, { value: trace, enumerable: false });
+    Object.defineProperty(error, TRACE, { value: trace, enumerable: false, configurable: true });
   }
   return error;
 }
@@ -312,18 +348,25 @@ export type ChainSuccess<T> = {
 /**
  * One chain per process. `modeloPreferidoIdx` sticks to the model that just
  * succeeded. Models are not cached: the caller builds one per attempt.
- * Quota 429s put a model in an in-memory cooldown so the next call skips it
- * immediately instead of burning the deadline on retries that cannot succeed.
+ *
+ * A model that answers 429 is skipped without a call until its own quota window
+ * ends — until the next Pacific midnight for a per-day quota, for the suggested
+ * `Retry-After` (default 60 s, capped at 5 min) for a per-minute one — so a
+ * dead model is never retried on every request. A permanent error (404, 401,
+ * 403, a rejected prompt) discards that model for the process. `skips()` exposes
+ * the state for `coverage`; when every model is skipped the chain fails
+ * immediately with no sleep and no call.
+ *
  * Slow models are soft-demoted to the end of the order for a short window so
  * the next request starts with a faster peer; they are still tried last.
  */
 export class GeminiChain {
   modeloPreferidoIdx = 0;
   private readonly thinkingOff = new Set<string>();
-  /** modelId → epoch ms when the cooldown ends. */
-  private readonly cooldownUntil = new Map<string, number>();
-  /** modelId → last classified quota kind that set the cooldown. */
-  private readonly cooldownKind = new Map<string, RateLimitKind>();
+  /** modelId → why it is being skipped without a call, and until when. */
+  private readonly skip = new Map<string, { kind: ModelSkipKind; until: number; resetMs?: number }>();
+  /** Last error that discarded a model, so an all-discarded chain names one. */
+  private lastDiscardError: unknown = null;
   /** modelId → epoch ms when soft demotion ends. */
   private readonly demotedUntil = new Map<string, number>();
   /** Consecutive slow (but successful or timed-out) answers per model. */
@@ -343,13 +386,29 @@ export class GeminiChain {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  /** True while every configured model is still in a quota cooldown. */
+  /**
+   * True while every configured model is skipped for a quota reason, so callers can
+   * fall back to the template immediately instead of walking a chain of 429s.
+   */
   quotaBlocked(): "per_day" | "per_minute" | null {
-    const now = this.now();
-    const modelos = this.config.models;
-    if (modelos.length === 0) return null;
-    if (!modelos.every((id) => (this.cooldownUntil.get(id) ?? 0) > now)) return null;
-    return this.dominantCooldownKind(now);
+    const active = this.activeSkips();
+    if (active.length === 0 || active.length !== this.config.models.length) return null;
+    return this.dominantQuotaKind(active);
+  }
+
+  /** Models currently skipped without a call, in chain order. Coverage reads this. */
+  skips(): ModelSkip[] {
+    return this.activeSkips().map(({ model, skip }) => ({
+      model,
+      skipped: skip.kind,
+      until: skip.until,
+      ...(skip.resetMs === undefined ? {} : { resetMs: skip.resetMs }),
+    }));
+  }
+
+  /** True when no model in the chain can be called right now. */
+  allSkipped(): boolean {
+    return this.config.models.length > 0 && this.activeSkips().length === this.config.models.length;
   }
 
   /** Test helper: whether a model is soft-demoted right now. */
@@ -357,16 +416,36 @@ export class GeminiChain {
     return this.inDemotion(modelId, this.now());
   }
 
-  private dominantCooldownKind(now: number): "per_day" | "per_minute" {
-    let anyDay = false;
-    for (const id of this.config.models) {
-      if ((this.cooldownUntil.get(id) ?? 0) > now && this.cooldownKind.get(id) === "per_day") anyDay = true;
+  /** Active skip per model, dropping quota skips whose window has already passed. */
+  private activeSkips(): { model: string; skip: { kind: ModelSkipKind; until: number; resetMs?: number } }[] {
+    const now = this.now();
+    const out: { model: string; skip: { kind: ModelSkipKind; until: number; resetMs?: number } }[] = [];
+    for (const model of this.config.models) {
+      const skip = this.skip.get(model);
+      if (!skip) continue;
+      if (skip.kind !== "discarded" && skip.until <= now) {
+        this.skip.delete(model);
+        continue;
+      }
+      out.push({ model, skip });
     }
-    return anyDay ? "per_day" : "per_minute";
+    return out;
   }
 
-  private inCooldown(modelId: string, now: number): boolean {
-    return (this.cooldownUntil.get(modelId) ?? 0) > now;
+  private dominantQuotaKind(active: { skip: { kind: ModelSkipKind } }[]): "per_day" | "per_minute" | null {
+    if (active.some(({ skip }) => skip.kind === "quota_daily")) return "per_day";
+    if (active.some(({ skip }) => skip.kind === "quota_minute")) return "per_minute";
+    return null;
+  }
+
+  private skippedNow(modelId: string, now: number): boolean {
+    const skip = this.skip.get(modelId);
+    if (!skip) return false;
+    if (skip.kind !== "discarded" && skip.until <= now) {
+      this.skip.delete(modelId);
+      return false;
+    }
+    return true;
   }
 
   private inDemotion(modelId: string, now: number): boolean {
@@ -410,10 +489,15 @@ export class GeminiChain {
   private applyQuotaCooldown(modelId: string, error: unknown): RateLimitKind {
     const { kind, retryDelayMs } = classifyRateLimit(error);
     const now = this.now();
-    const ms = cooldownMsFor(kind, retryDelayMs, now);
-    this.cooldownUntil.set(modelId, now + ms);
-    this.cooldownKind.set(modelId, kind);
+    const next = skipForRateLimit(kind, retryDelayMs, now);
+    this.skip.set(modelId, next);
     return kind;
+  }
+
+  /** A permanent error (404, 401, 403, a rejected prompt) never gets a second call. */
+  private discard(modelId: string, error: unknown): void {
+    this.skip.set(modelId, { kind: "discarded", until: Infinity });
+    this.lastDiscardError = error;
   }
 
   async generate<T>(
@@ -448,6 +532,9 @@ export class GeminiChain {
 
     const blocked = this.quotaBlocked();
     if (blocked) return fail(new GeminiQuotaError(blocked));
+    // Every model skipped, none of them for quota: nothing can be called, so the
+    // cycle must end here instead of spending the deadline on an empty loop.
+    if (this.allSkipped()) return fail(this.lastDiscardError ?? new Error("no_model_available"));
 
     /**
      * Prefer non-demoted models (from the sticky index), then demoted ones so a
@@ -461,7 +548,7 @@ export class GeminiChain {
           const idx = (this.modeloPreferidoIdx + step) % modelos.length;
           if (descartados.has(idx)) continue;
           const id = modelos[idx]!;
-          if (this.inCooldown(id, now)) {
+          if (this.skippedNow(id, now)) {
             descartados.add(idx);
             continue;
           }
@@ -478,9 +565,12 @@ export class GeminiChain {
       if (this.now() >= deadlineAt) return fail(new GeminiDeadlineError(ultimoError));
       const idx = pick();
       if (idx === null) {
-        // Only a quota exhaustion path: every model still in cooldown (not merely discarded).
-        if (modelos.every((id) => this.inCooldown(id, this.now()))) {
-          return fail(new GeminiQuotaError(this.dominantCooldownKind(this.now())));
+        // Every model is skipped: either a quota exhaustion (a reason callers can act
+        // on) or a set of permanent failures, in which case the last one is named.
+        if (this.allSkipped()) {
+          const kind = this.dominantQuotaKind(this.activeSkips());
+          if (kind) return fail(new GeminiQuotaError(kind));
+          return fail(this.lastDiscardError ?? ultimoError);
         }
         break;
       }
@@ -533,6 +623,9 @@ export class GeminiChain {
           continue;
         }
         if (!isTransient(error)) {
+          // Permanent for this process: a model that 404s once must not be called again
+          // on the next row, and an all-discarded chain still names the reason.
+          this.discard(modelId, error);
           descartados.add(idx);
           if (this.modeloPreferidoIdx === idx) {
             this.modeloPreferidoIdx = (this.modeloPreferidoIdx + 1) % Math.max(1, modelos.length);

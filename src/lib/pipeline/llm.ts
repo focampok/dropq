@@ -18,6 +18,7 @@ import {
   readGeminiConfig,
   readTrace,
   type LlmCallTrace,
+  type ModelSkipKind,
   type RateLimitKind,
 } from "@/lib/llm/gemini-chain";
 import fixture from "@/lib/pack/fixture.json";
@@ -215,6 +216,32 @@ function googleTransport(): GeminiChain | null {
 /** Process-wide Gemini chain cooldown: `"per_day"` / `"per_minute"` or null. */
 export function geminiQuotaBlocked(): "per_day" | "per_minute" | null {
   return googleTransport()?.quotaBlocked() ?? null;
+}
+
+/**
+ * Models the chain is skipping without a call right now, for `coverage.llm.models`.
+ * A skip is process-wide state, so it is reported per pack rather than recomputed.
+ */
+export function geminiModelSkips(): { model: string; skipped: ModelSkipKind }[] {
+  return (googleTransport()?.skips() ?? []).map(({ model, skipped }) => ({ model, skipped }));
+}
+
+/**
+ * True when the chain cannot call anything and at least one model is out of daily
+ * quota: the signal that more rounds of an operator run cannot succeed before the
+ * Pacific midnight in `resetMs`.
+ */
+export function geminiDailyExhaustion(): { exhausted: boolean; resetMs: number | null } {
+  const chain = googleTransport();
+  const read = readGeminiConfig();
+  if (!chain || !read.ok || read.config.models.length === 0) {
+    return { exhausted: false, resetMs: null };
+  }
+  const skips = chain.skips();
+  if (skips.length !== read.config.models.length) return { exhausted: false, resetMs: null };
+  const daily = skips.filter((skip) => skip.skipped === "quota_daily");
+  if (daily.length === 0) return { exhausted: false, resetMs: null };
+  return { exhausted: true, resetMs: Math.max(...daily.map((skip) => skip.resetMs ?? skip.until)) };
 }
 
 /** Test helper: drop the process-wide chain so the next call rebuilds it. */

@@ -382,22 +382,25 @@ describe("llm fallbacks", () => {
     vi.stubEnv("NEBIUS_API_KEY", "");
     vi.stubEnv("NEBIUS_BASE_URL", "");
     vi.stubEnv("NEBIUS_MODEL", "");
-    vi.doMock("ai", () => ({
-      generateObject: vi.fn(async () => {
-        throw Object.assign(new Error("missing model"), { statusCode: 404 });
-      }),
-    }));
+    const generateObject = vi.fn(async () => {
+      throw Object.assign(new Error("missing model"), { statusCode: 404 });
+    });
+    vi.doMock("ai", () => ({ generateObject }));
     const { chooseBridgeAnchors, composeNarratives } = await loadLlm();
     const anchors = await chooseBridgeAnchors(candidates);
     expect(anchors).toMatchObject({ source: "fallback", failure: "model_unavailable", anchorSource: "rule_b_fallback" });
     expect(anchors.trace?.chainTried).toEqual(["configured-model"]);
+    // A 404 is permanent, so that model is discarded for the process: the narration
+    // caller reports the same code without spending another call on it.
+    expect(generateObject).toHaveBeenCalledTimes(1);
     const narratives = await composeNarratives({
       locale: "en",
       plans: [{ label: "A", city: "Houston", anchors: [], slots: { listen: "Karol G" } }],
     });
     expect(narratives.failures).toContain("model_unavailable");
     expect(narratives.plans[0]).toMatchObject({ source: "template" });
-    expect(narratives.trace?.chainTried).toEqual(["configured-model"]);
+    expect(narratives.trace?.chainTried).toEqual([]);
+    expect(generateObject).toHaveBeenCalledTimes(1);
   });
 
   it("passes maxRetries 0 and the minimal thinking level on a Google call", async () => {

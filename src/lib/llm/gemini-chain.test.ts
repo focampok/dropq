@@ -521,3 +521,197 @@ describe("gemini fallback loop", () => {
     expect(ANCHOR_ATTEMPT_CAP_MS).not.toBe(NARRATION_ATTEMPT_CAP_MS);
   });
 });
+
+const PER_DAY_BODY = "GenerateRequestsPerDayPerProjectPerModel-FreeTier";
+
+function perDay(): Error {
+  return Object.assign(new Error("Resource exhausted"), {
+    statusCode: 429,
+    responseBody: PER_DAY_BODY,
+  });
+}
+
+function perMinute(delay: string): Error {
+  return Object.assign(new Error("Resource exhausted"), {
+    statusCode: 429,
+    data: {
+      error: {
+        details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: delay }],
+      },
+    },
+  });
+}
+
+describe("per-model quota exhaustion", () => {
+  /** A chain where `live` rate-limits once and the two fallbacks are out of daily quota. */
+  function throttledChain() {
+    let now = Date.parse("2026-10-12T18:00:00.000Z");
+    const calls = new Map<string, number>(["live", "dead-a", "dead-b"].map((id) => [id, 0]));
+    let liveFails = true;
+    const sleeps: number[] = [];
+    const chain = new GeminiChain(config(["live", "dead-a", "dead-b"]), {
+      now: () => now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+    });
+    const run = async ({ modelId }: ChainCall) => {
+      calls.set(modelId, (calls.get(modelId) ?? 0) + 1);
+      if (modelId === "live") {
+        if (liveFails) return Promise.reject(perMinute("45s"));
+        return "ok";
+      }
+      return Promise.reject(perDay());
+    };
+    return {
+      chain,
+      calls,
+      sleeps,
+      run,
+      reached: (ms: number) => {
+        now += ms;
+      },
+      allowLive: () => {
+        liveFails = false;
+      },
+    };
+  }
+
+  it("calls a per-day exhausted model at most once per process, across many requests", async () => {
+    const t = throttledChain();
+    await expect(t.chain.generate(60_000, t.run)).rejects.toMatchObject({ name: "GeminiQuotaError" });
+    expect(t.calls.get("live")).toBe(1);
+    expect(t.calls.get("dead-a")).toBe(1);
+    expect(t.calls.get("dead-b")).toBe(1);
+    expect(t.sleeps).toEqual([]);
+
+    // Every later request inside the cooldown window pays nothing: the two dead
+    // models stay skipped until their daily reset, so only the cooldown of `live`
+    // is in the way.
+    for (let request = 0; request < 5; request += 1) {
+      await expect(t.chain.generate(60_000, t.run)).rejects.toMatchObject({ name: "GeminiQuotaError" });
+    }
+    expect(t.calls.get("live")).toBe(1);
+    expect(t.calls.get("dead-a")).toBe(1);
+    expect(t.calls.get("dead-b")).toBe(1);
+
+    // Once the per-minute cooldown expires the principal answers again, and the
+    // daily-exhausted fallbacks are still never called a second time.
+    t.reached(45_000);
+    t.allowLive();
+    await expect(t.chain.generate(60_000, t.run)).resolves.toMatchObject({ value: "ok" });
+    expect(t.calls.get("live")).toBe(2);
+    expect(t.calls.get("dead-a")).toBe(1);
+    expect(t.calls.get("dead-b")).toBe(1);
+  });
+
+  it("skips a cooling model with no call and tries it again when the cooldown expires", async () => {
+    let now = Date.parse("2026-10-12T18:00:00.000Z");
+    const chain = new GeminiChain(config(["only"]), { now: () => now, sleep: async (ms) => void (now += ms) });
+    let calls = 0;
+    const run = async () => {
+      calls += 1;
+      if (calls === 1) throw perMinute("45s");
+      return "ok";
+    };
+    await expect(chain.generate(60_000, run)).rejects.toMatchObject({ name: "GeminiQuotaError" });
+    expect(calls).toBe(1);
+    await expect(chain.generate(60_000, run)).rejects.toMatchObject({ name: "GeminiQuotaError" });
+    expect(calls).toBe(1);
+    now += 45_000;
+    await expect(chain.generate(60_000, run)).resolves.toMatchObject({ value: "ok" });
+    expect(calls).toBe(2);
+  });
+
+  it("caps a per-minute cooldown at five minutes", async () => {
+    let now = Date.parse("2026-10-12T18:00:00.000Z");
+    const chain = new GeminiChain(config(["only"]), { now: () => now, sleep: async (ms) => void (now += ms) });
+    await expect(
+      chain.generate(60_000, async () => {
+        throw perMinute("900s");
+      }),
+    ).rejects.toMatchObject({ name: "GeminiQuotaError" });
+    expect(chain.skips()).toEqual([{ model: "only", skipped: "quota_minute", until: now + 300_000 }]);
+    now += 300_000;
+    await expect(chain.generate(60_000, async () => "ok")).resolves.toMatchObject({ value: "ok" });
+  });
+
+  it("makes zero calls and no sleeps when every model is already skipped", async () => {
+    let now = Date.parse("2026-10-12T18:00:00.000Z");
+    const sleeps: number[] = [];
+    const chain = new GeminiChain(config(["live", "dead-a"]), {
+      now: () => now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+    });
+    const calls: string[] = [];
+    await expect(
+      chain.generate(60_000, async ({ modelId }) => {
+        calls.push(modelId);
+        if (modelId === "live") throw perMinute("45s");
+        throw perDay();
+      }),
+    ).rejects.toMatchObject({ name: "GeminiQuotaError" });
+    expect(calls).toEqual(["live", "dead-a"]);
+
+    const refused: string[] = [];
+    for (let request = 0; request < 3; request += 1) {
+      await expect(
+        chain.generate(60_000, async ({ modelId }) => {
+          refused.push(modelId);
+          return "ok";
+        }),
+      ).rejects.toMatchObject({ name: "GeminiQuotaError" });
+    }
+    expect(refused).toEqual([]);
+    expect(sleeps).toEqual([]);
+    expect(chain.skips().map((skip) => `${skip.model}:${skip.skipped}`)).toEqual([
+      "live:quota_minute",
+      "dead-a:quota_daily",
+    ]);
+    expect(chain.skips().find((skip) => skip.skipped === "quota_daily")?.resetMs).toBe(
+      nextPacificMidnightMs(now),
+    );
+  });
+
+  it("reports a permanently discarded model as discarded", async () => {
+    const chain = new GeminiChain(config(["gone", "ok"]), { sleep: async () => undefined });
+    await expect(chain.generate(60_000, async ({ modelId }) => {
+      if (modelId === "gone") throw http(404, "missing");
+      return "ok";
+    })).resolves.toMatchObject({ value: "ok" });
+    expect(chain.skips()).toEqual([{ model: "gone", skipped: "discarded", until: Infinity }]);
+    // The discarded model is not called again, even though it is still first in the order.
+    chain.modeloPreferidoIdx = 0;
+    const seen: string[] = [];
+    await chain.generate(60_000, async ({ modelId }) => {
+      seen.push(modelId);
+      return modelId;
+    });
+    expect(seen).toEqual(["ok"]);
+  });
+});
+
+describe("Pacific daily reset", () => {
+  it("lands on midnight in America/Los_Angeles in both winter and summer", () => {
+    const near = (expectedIso: string, nowIso: string) => {
+      const got = nextPacificMidnightMs(Date.parse(nowIso));
+      const expected = Date.parse(expectedIso);
+      expect(got).toBeGreaterThanOrEqual(expected);
+      expect(got - expected).toBeLessThanOrEqual(250);
+    };
+    // PST (UTC-8) in January, PDT (UTC-7) in July.
+    near("2026-01-15T08:00:00.000Z", "2026-01-15T00:00:00.000Z");
+    near("2026-07-15T07:00:00.000Z", "2026-07-15T00:00:00.000Z");
+    // The Sundays the clock changes, either side of it.
+    near("2026-03-09T07:00:00.000Z", "2026-03-08T12:00:00.000Z");
+    near("2026-11-02T08:00:00.000Z", "2026-11-01T12:00:00.000Z");
+    // The instant after the spring-forward jump is already the next day in the zone.
+    expect(new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", day: "2-digit" }).format(
+      new Date(nextPacificMidnightMs(Date.parse("2026-03-09T03:30:00.000Z"))),
+    )).toBe("09");
+  });
+});

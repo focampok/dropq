@@ -20,6 +20,7 @@ import { dedupeTags, filterSlotCards, TAG_PREVIEW_LIMIT } from "@/lib/pipeline/t
 import {
   chooseBridgeAnchors,
   composeNarratives,
+  geminiModelSkips,
   offReasonWithQuota,
   templateNarrative,
   type AnchorChoice,
@@ -81,6 +82,12 @@ type LlmCoverage = {
   latencyMs: { anchors: number; narrative: number };
   calls: number;
   failures: LlmFailure[];
+  /**
+   * Models the chain is skipping without a call and why (`quota_daily`,
+   * `quota_minute`, `discarded`). Process-wide state, so two plans of the same
+   * pack report the same list; it is what explains a template row.
+   */
+  models: { model: string; skipped: string }[];
 };
 
 type RuleBCoverage = {
@@ -114,6 +121,7 @@ function llmCoverage(input: {
     latencyMs: { anchors: anchors?.latencyMs ?? 0, narrative: narrative?.latencyMs ?? 0 },
     calls: (anchors?.calls ?? 0) + (narrative?.calls ?? 0),
     failures: input.failures,
+    models: geminiModelSkips(),
   };
 }
 

@@ -29,10 +29,10 @@ export const QLOO_MONTHLY_LIMIT = intEnv("QLOO_MONTHLY_LIMIT", 10000);
 export const QLOO_USED_BASELINE = intEnv("QLOO_USED_BASELINE", 0);
 
 /**
- * Temporary diagnostic. When on, the first few requests log how many
- * X-Forwarded-For entries arrived and whether the derived client address looks
- * private — enough to tell a wrong TRUSTED_PROXY_HOPS without logging an IP.
- * Read at call time so it can be toggled without a rebuild.
+ * Temporary diagnostic. When on, the first few requests log X-Forwarded-For
+ * entry count, per-entry HMAC tags (never the address), which index is derived,
+ * and whether each entry looks private — enough to verify TRUSTED_PROXY_HOPS
+ * without logging an IP. Read at call time so it can be toggled without a rebuild.
  */
 export function logIpProbeEnabled(): boolean {
   return boolEnv("LOG_IP_PROBE");

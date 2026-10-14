@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { NextResponse } from "next/server";
 import {
   CHEAP_IP_LIMIT,
@@ -9,6 +10,9 @@ import {
   logIpProbeEnabled,
 } from "@/lib/config";
 import { sessionCookie } from "@/lib/session/cookie";
+
+/** Fixed label mixed into the probe HMAC key so tags are not reusable as session MAC. */
+const IP_PROBE_HMAC_LABEL = "ip-probe";
 
 type WindowRule = { ms: number; max: number };
 
@@ -122,18 +126,61 @@ export function resetIpProbe(): void {
 }
 
 /**
+ * First 6 hex chars of HMAC-SHA256(entry, key), where key is derived from
+ * SESSION_SECRET and a fixed label. Stable for the same secret+entry; never
+ * reversible to the address. Empty SESSION_SECRET still produces a tag (probe
+ * must not crash) but should not occur in production.
+ */
+export function ipProbeTag(entry: string): string {
+  const secret = process.env.SESSION_SECRET?.trim() ?? "";
+  const key = createHmac("sha256", secret).update(IP_PROBE_HMAC_LABEL).digest();
+  return createHmac("sha256", key).update(entry).digest("hex").slice(0, 6);
+}
+
+/**
+ * Parse X-Forwarded-For the same way `clientIp` does (trim, drop empty segments).
+ * Exported for tests; the probe never logs the values themselves.
+ */
+export function xffEntries(request: Request): string[] {
+  const raw = request.headers.get("x-forwarded-for") ?? "";
+  return raw.split(",").map((part) => part.trim()).filter(Boolean);
+}
+
+/** Index `clientIp` would use, or `-1` when hops < 1 or the chain is empty. */
+export function derivedXffIndex(entryCount: number, hops: number): number {
+  if (hops < 1 || entryCount === 0) return -1;
+  return Math.max(0, entryCount - hops);
+}
+
+/**
  * Temporary diagnostic for verifying `TRUSTED_PROXY_HOPS` in production, off
- * unless `LOG_IP_PROBE` is on. Reports only counts and a boolean — never an
- * address — so the log can be pasted anywhere. `derived_private=true` from a
- * real visitor means the hop count is wrong and everyone is sharing one bucket.
+ * unless `LOG_IP_PROBE` is on. Never logs an address — only counts, booleans and
+ * irreversible 6-hex tags — so the log can be pasted anywhere. Compare tags from
+ * two networks: the entry that changes is the visitor; `derived_idx` must point
+ * at it. `derived_private=true` from a real visitor still means the hop count is
+ * wrong and everyone is sharing one bucket.
  */
 function logIpProbe(request: Request, hops: number): void {
   if (!logIpProbeEnabled() || ipProbeRemaining <= 0) return;
   ipProbeRemaining -= 1;
-  const raw = request.headers.get("x-forwarded-for") ?? "";
-  const entries = raw.split(",").map((part) => part.trim()).filter(Boolean).length;
+  const parts = xffEntries(request);
+  const tags = parts.map((entry) => ipProbeTag(entry));
+  const entriesPrivate = parts.map((entry) => isPrivateAddress(entry));
+  const idx = derivedXffIndex(parts.length, hops);
+  const derived =
+    idx >= 0 && parts[idx] !== undefined ? parts[idx]! : UNKNOWN_IP;
+  const xriRaw = request.headers.get("x-real-ip")?.trim() ?? "";
+  const xri = xriRaw ? ipProbeTag(xriRaw) : "absent";
   console.log(
-    `ip_probe xff_entries=${entries} hops=${hops} derived_private=${isPrivateAddress(clientIp(request, hops))}`,
+    [
+      `ip_probe xff_entries=${parts.length}`,
+      `hops=${hops}`,
+      `derived_private=${isPrivateAddress(derived)}`,
+      `tags=[${tags.join(",")}]`,
+      `derived_idx=${idx}`,
+      `xri=${xri}`,
+      `entries_private=[${entriesPrivate.join(",")}]`,
+    ].join(" "),
   );
 }
 

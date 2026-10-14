@@ -201,6 +201,15 @@ uses the template, with `coverage.llm.off` naming the reason. That is a valid de
 **Leave the Google key and `GEMINI_MODEL` set for a public demo.** With `LLM_PROVIDER=google`
 and no model id the boot check reports `MODEL_CHAIN invalid (no model)`.
 
+### How to verify `TRUSTED_PROXY_HOPS`
+
+Set `LOG_IP_PROBE=1` for a short window (it logs only the first five requests per process,
+never an address). Hit the site from two different networks and compare the `ip_probe`
+lines: each `tags=[…]` entry is a one-way fingerprint of one `X-Forwarded-For` hop. The tag
+that **changes** between the two visits is the visitor; the tags that stay the same are
+proxies. `derived_idx` must point at the visitor tag — if it points at a stable (proxy)
+tag, raise or lower `TRUSTED_PROXY_HOPS` until it does. Turn the probe off again when done.
+
 ### One instance
 
 Rate limits, the daily generation cap and the LLM hourly cap are in-memory, so the service

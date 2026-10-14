@@ -1,25 +1,36 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   UNKNOWN_IP,
   clientIp,
+  derivedXffIndex,
   enforceRateLimit,
+  ipProbeTag,
   isPrivateAddress,
   resetIpProbe,
   resetRateLimits,
 } from "@/lib/rate-limit";
 
 /** A request carrying the given X-Forwarded-For value, or none when null. */
-function forwarded(xff: string | null): Request {
+function forwarded(xff: string | null, extra?: { xRealIp?: string }): Request {
   const headers = new Headers();
   if (xff !== null) headers.set("x-forwarded-for", xff);
+  if (extra?.xRealIp !== undefined) headers.set("x-real-ip", extra.xRealIp);
   return new Request("http://localhost/api/health", { method: "GET", headers });
 }
+
+const originalSecret = process.env.SESSION_SECRET;
+
+beforeEach(() => {
+  process.env.SESSION_SECRET = "probe-test-secret-thirty-two-chars!!";
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   resetIpProbe();
   resetRateLimits();
+  if (originalSecret === undefined) delete process.env.SESSION_SECRET;
+  else process.env.SESSION_SECRET = originalSecret;
 });
 
 describe("clientIp hop selection", () => {
@@ -128,40 +139,97 @@ describe("isPrivateAddress", () => {
   });
 });
 
-describe("ip probe", () => {
-  function probeRequest(xff: string | null): Request {
-    const headers = new Headers();
-    if (xff !== null) headers.set("x-forwarded-for", xff);
-    return new Request("http://localhost/api/health", { method: "GET", headers });
-  }
+describe("ipProbeTag", () => {
+  it("is stable for the same input and differs for different inputs", () => {
+    const a = ipProbeTag("203.0.113.7");
+    const b = ipProbeTag("203.0.113.7");
+    const c = ipProbeTag("198.51.100.4");
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
+    expect(a).toMatch(/^[0-9a-f]{6}$/);
+  });
 
+  it("changes when SESSION_SECRET changes", () => {
+    const before = ipProbeTag("203.0.113.7");
+    process.env.SESSION_SECRET = "a-different-secret-thirty-two-chars!";
+    const after = ipProbeTag("203.0.113.7");
+    expect(after).not.toBe(before);
+  });
+});
+
+describe("ip probe", () => {
   it("stays silent unless LOG_IP_PROBE is on", async () => {
     vi.stubEnv("LOG_IP_PROBE", "0");
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     resetRateLimits();
-    await enforceRateLimit(probeRequest("203.0.113.7"), "other");
+    await enforceRateLimit(forwarded("203.0.113.7"), "other");
     expect(log).not.toHaveBeenCalled();
   });
 
-  it("reports entry count and privateness for the first five requests only", async () => {
+  it("reports the extended line for the first five requests only", async () => {
     vi.stubEnv("LOG_IP_PROBE", "1");
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     resetRateLimits();
     for (let i = 0; i < 7; i += 1) {
-      await enforceRateLimit(probeRequest("203.0.113.7, 10.0.0.1"), "other");
+      await enforceRateLimit(forwarded("203.0.113.7, 10.0.0.1"), "other");
     }
     expect(log).toHaveBeenCalledTimes(5);
-    expect(log).toHaveBeenCalledWith("ip_probe xff_entries=2 hops=1 derived_private=true");
+    const t0 = ipProbeTag("203.0.113.7");
+    const t1 = ipProbeTag("10.0.0.1");
+    expect(log).toHaveBeenCalledWith(
+      `ip_probe xff_entries=2 hops=1 derived_private=true tags=[${t0},${t1}] derived_idx=1 xri=absent entries_private=[false,true]`,
+    );
+    expect(derivedXffIndex(2, 1)).toBe(1);
   });
 
-  it("never logs the address itself", async () => {
+  it("never logs a raw IPv4 or IPv6 address in the line", async () => {
     vi.stubEnv("LOG_IP_PROBE", "1");
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     resetRateLimits();
-    await enforceRateLimit(probeRequest("203.0.113.7, 198.51.100.4"), "other");
+    const samples = [
+      "203.0.113.7, 198.51.100.4",
+      "2001:db8::1, 2001:db8::2",
+      "203.0.113.7, 2001:db8::abcd",
+    ];
+    for (const xff of samples) {
+      resetIpProbe();
+      log.mockClear();
+      await enforceRateLimit(forwarded(xff), "other");
+      const line = String(log.mock.calls[0]?.[0] ?? "");
+      for (const part of xff.split(",").map((p) => p.trim())) {
+        expect(line).not.toContain(part);
+      }
+      expect(line).toMatch(/^ip_probe /);
+      expect(line).toMatch(/tags=\[[0-9a-f]{6}(,[0-9a-f]{6})*\]/);
+      expect(line).toMatch(/derived_idx=\d+/);
+      expect(line).toMatch(/xri=(absent|[0-9a-f]{6})/);
+      expect(line).toMatch(/entries_private=\[(true|false)(,(true|false))*\]/);
+    }
+  });
+
+  it("tags x-real-ip when present and matches an XFF tag when equal", async () => {
+    vi.stubEnv("LOG_IP_PROBE", "1");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    resetRateLimits();
+    await enforceRateLimit(forwarded("203.0.113.7, 198.51.100.4", { xRealIp: "198.51.100.4" }), "other");
     const line = String(log.mock.calls[0]?.[0] ?? "");
-    expect(line).not.toContain("203.0.113.7");
+    const t1 = ipProbeTag("198.51.100.4");
+    expect(line).toContain(`xri=${t1}`);
+    expect(line).toContain(`tags=[${ipProbeTag("203.0.113.7")},${t1}]`);
     expect(line).not.toContain("198.51.100.4");
-    expect(line).toBe("ip_probe xff_entries=2 hops=1 derived_private=false");
+  });
+
+  it("does not crash on malformed X-Forwarded-For entries", async () => {
+    vi.stubEnv("LOG_IP_PROBE", "1");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    resetRateLimits();
+    for (const value of ["<script>", "a".repeat(500), "1.2.3.4, ...", ",,,", "unknown"]) {
+      resetIpProbe();
+      expect(() => enforceRateLimit(forwarded(value), "other")).not.toThrow();
+    }
+    expect(log.mock.calls.length).toBeGreaterThan(0);
+    for (const call of log.mock.calls) {
+      expect(String(call[0])).toMatch(/^ip_probe /);
+    }
   });
 });

@@ -100,9 +100,13 @@ The pack-cache signature includes `PIPELINE_VERSION` (`src/lib/pipeline/config.t
 | `NEBIUS_API_KEY` / `NEBIUS_BASE_URL` / `NEBIUS_MODEL` | Nebius provider |
 | `TRUSTED_PROXY_HOPS` | X-Forwarded-For hops (default 1) |
 | `QLOO_CUSTOM_RESERVE` | Soft reserve for custom packs |
+| `QLOO_MONTHLY_LIMIT` | Contracted Qloo requests per month (default 10000) |
+| `QLOO_USED_BASELINE` | Qloo requests spent before this deployment counted (default 0) |
 | `LIVE_GENERATIONS_PER_DAY` | Soft daily live-generation cap |
 | `LLM_CALLS_PER_HOUR` | Soft hourly Gemini cap |
 | `PACK_CACHE_TTL_HOURS` | Pack cache TTL (presets use 72h) |
+| `DROPQ_LLM_BUDGET` | Per-process model-call cap (default uncapped) |
+| `LOG_IP_PROBE` | `1` logs a five-request client-IP diagnostic (default off) |
 
 ## End-to-end tests
 
@@ -123,13 +127,106 @@ fails; a SKIP is never a pass.
   `prod-safe` checks against a deployment. It starts no process and touches no local
   database, and it performs no live generation — only cached preset loads, which spend no
   Qloo or Gemini. Without `E2E_BASE_URL` the command prints `E2E_BASE_URL required` and
-  exits non-zero without touching the network.
+  exits non-zero without touching the network. Over `https` it also **requires**
+  `Strict-Transport-Security` on `/` and `/api/health`; over `http` HSTS is only noted,
+  because browsers ignore it there and the header is gated on `NODE_ENV=production`.
 - `pnpm e2e:report` regenerates `report.html` and `summary.json` from the last run.
+
+**Run the remote warm before a prod run.** A preset missing from `PackCache` fails A1 with
+`preset not warm: run the remote warm` and a load time over 1.5 s — the intended signal that
+the deployment's cache is cold, not a bug in the app.
+
+The runner also cross-checks what was recorded against a manifest of every check id: a check
+that reports nothing, an id outside the manifest, a duplicate id, or a SKIP carrying an
+unexpected reason is turned into a FAIL, so nothing can pass by staying silent.
 
 Cost is capped by counters that abort the expensive work: 45 Gemini calls and 70 Qloo
 requests per run. Without a usable Chromium every browser check is `SKIP: no browser` and
 the API-level checks still run; the suite uses the same browser `pnpm verify:ui` uses and
 never downloads one.
+
+## Deployment (Railway)
+
+Two services: **this repository as one web service**, and the **native Railway Postgres**
+(which provides `DATABASE_URL` for the web service). `railway.json` holds the commands, so
+nothing has to be typed into the dashboard except the variables below.
+
+```
+build    pnpm build        # no database, no Qloo key and no Gemini key needed
+pre-deploy  pnpm db:deploy # prisma migrate deploy; needs DATABASE_URL only, and is idempotent
+start    pnpm start        # binds $PORT on 0.0.0.0
+health   GET /api/health   # 200 {ok,db}; the healthcheck, 120 s timeout
+```
+
+On failure the service restarts, up to 10 times. The build needs no secret: `prisma generate`
+runs in install/build and never opens a connection, so a first deploy can succeed before the
+variables are filled in — but the app stops at boot, loudly and by name only, if
+`DATABASE_URL` is absent or `SESSION_SECRET` is missing or shorter than 32 characters.
+
+### Variables
+
+Names only. Required means required in production; everything else has a working default and
+can be left unset. `pnpm env:check` prints one status per name (never a value) and exits
+non-zero on anything required-and-absent or invalid.
+
+| Name | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `DATABASE_URL` | yes | — | Postgres connection. Must not point at localhost in production. |
+| `SESSION_SECRET` | yes | — | Session-cookie HMAC key, at least 32 characters. No fallback exists. |
+| `QLOO_API_KEY` | yes | — | Qloo key. Without it the app still serves cached presets and answers live generation with the friendly "resting" message. |
+| `QLOO_BASE_URL` | no | hackathon host | Qloo API base; must stay on the allowlisted host. |
+| `QLOO_MONTHLY_LIMIT` | no | 10000 | Contracted monthly requests, for the usage guard. |
+| `QLOO_USED_BASELINE` | no | 0 | Requests already spent on the same key before this deployment counted. |
+| `QLOO_CUSTOM_RESERVE` | no | 2000 | Below this remaining, custom live builds are refused. |
+| `TRUSTED_PROXY_HOPS` | no | 1 | Proxies appending to `X-Forwarded-For`. Railway adds one; leave it at 1. |
+| `LIVE_GENERATIONS_PER_DAY` | no | 250 | Soft daily cap on uncached builds. |
+| `LLM_CALLS_PER_HOUR` | no | 120 | Above this, narration falls back to the template. |
+| `PACK_CACHE_TTL_HOURS` | no | 24 | Ordinary pack-cache TTL; preset rows use 72. |
+| `LLM_PROVIDER` | no | inferred | `google` or `nebius`; empty infers Nebius when its three variables are set. |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | see note | — | Gemini key. Required when the Google provider is in use; `GEMINI_API_KEY` is accepted instead. |
+| `GEMINI_API_KEY` | no | — | Alternative Gemini key. |
+| `GEMINI_MODEL` | see note | — | Chain principal; falls back to `LLM_MODEL`. No built-in default, so one of the two must be set. |
+| `LLM_MODEL` | see note | — | Chain principal when `GEMINI_MODEL` is empty. |
+| `GEMINI_FALLBACK_MODELS` | no | none | Comma-separated ids tried after the principal. |
+| `GEMINI_RETRY_ATTEMPTS` / `GEMINI_RETRY_DELAY_MS` / `GEMINI_RETRY_MAX_DELAY_MS` | no | 3 / 1000 / 8000 | Retry and backoff knobs. |
+| `NEBIUS_API_KEY` / `NEBIUS_BASE_URL` / `NEBIUS_MODEL` | see note | — | Required as a set when the Nebius provider is in use. |
+| `DROPQ_LLM_BUDGET` | no | uncapped | Per-process model-call cap. |
+| `LOG_IP_PROBE` | no | off | Temporary client-IP diagnostic; see below. |
+
+Without any LLM credentials the app degrades on purpose: anchors use rule B and narration
+uses the template, with `coverage.llm.off` naming the reason. That is a valid deployment.
+
+**Leave the Google key and `GEMINI_MODEL` set for a public demo.** With `LLM_PROVIDER=google`
+and no model id the boot check reports `MODEL_CHAIN invalid (no model)`.
+
+### One instance
+
+Rate limits, the daily generation cap and the LLM hourly cap are in-memory, so the service
+must run a **single replica**. Two replicas would double every allowance and let a caller
+half their own rate limit by reconnecting.
+
+### Warm the presets before sharing the URL
+
+A fresh database serves no preset from cache, so the first visitor's click would spend Qloo
+and Gemini and take 8–20 s. Warm the six preset rows first, from a machine that can reach
+the deployment's database:
+
+```bash
+# DATABASE_URL in the shell wins over .env; Qloo and Gemini keys still come from .env
+DATABASE_URL='<the deployment connection string>' pnpm warm --confirm-remote
+DATABASE_URL='<the deployment connection string>' pnpm warm --check --confirm-remote
+```
+
+`pnpm warm` refuses any non-local database unless `--confirm-remote` is passed, prints only
+`local` or `remote` (never the host), and asks again on every run — so warming production by
+accident is not possible. `--check` reads the six stored rows without spending anything and
+exits non-zero if any is missing, still on the template, or stale.
+
+Then verify the deployment itself:
+
+```bash
+E2E_BASE_URL=https://<host> pnpm e2e -- --profile prod
+```
 
 ## Limitations
 

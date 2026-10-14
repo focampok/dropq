@@ -78,7 +78,12 @@ pnpm dev
 
 Optional: `pnpm warm` prebuilds the three presets in English and Spanish into the pack cache (needs Qloo; the LLM is optional and upgrades the narration later). `pnpm warm --check` reports what is stored. `pnpm verify:local` exercises presets over HTTP against a running app.
 
-**After the daily Gemini quota resets**, run `pnpm warm` once more: the six rows then hold LLM narration instead of the template, and an LLM row replaces a template row of the same signature. Until then `pnpm warm --check` reports `fail:template` for all six, which is expected and not an error.
+Each row ends in exactly one of `cached` (a new LLM row was written), `kept` (the stored row is at least as good), `template` (written with the template narration, nothing better available) or `failed` (the build itself could not run), and the line always carries `reason=` and `attempts=`. An LLM outage is not a `failed` row: the row is still written with the template and the reason names the cause (`quota_daily`, `quota_minute`, `timeout`, `llm_error`), so a warm run never leaves a language missing because the model was out of quota.
+
+- `pnpm warm --only <preset>[:en|:es]` (repeatable) limits the matrix to those rows.
+- `pnpm warm --until-ok` repeats only the rows that are not yet `llm`, up to `--max-rounds` (default 4) times and never sooner than `--pause-s` (default 300, minimum 60). It exits 0 as soon as every selected row is `llm`; it stops early, non-zero, when every Gemini model is out of its daily quota (naming the reset time in Guatemala time) or when the Qloo remaining falls under the reserve.
+
+**After the daily Gemini quota resets**, run `pnpm warm` (or `pnpm warm --until-ok`) once more: the six rows then hold LLM narration instead of the template, and an LLM row replaces a template row of the same signature. Until then `pnpm warm --check` reports `fail:template` for all six, which is expected and not an error.
 
 The pack-cache signature includes `PIPELINE_VERSION` (`src/lib/pipeline/config.ts`), so changing how a pack is built makes every previously cached pack a miss. Bump it whenever the pipeline changes what a stored pack contains.
 
@@ -149,20 +154,32 @@ never downloads one.
 ## Deployment (Railway)
 
 Two services: **this repository as one web service**, and the **native Railway Postgres**
-(which provides `DATABASE_URL` for the web service). `railway.json` holds the commands, so
-nothing has to be typed into the dashboard except the variables below.
+(which provides `DATABASE_URL` for the web service).
 
-```
-build    pnpm build        # no database, no Qloo key and no Gemini key needed
-pre-deploy  pnpm db:deploy # prisma migrate deploy; needs DATABASE_URL only, and is idempotent
-start    pnpm start        # binds $PORT on 0.0.0.0
-health   GET /api/health   # 200 {ok,db}; the healthcheck, 120 s timeout
-```
+The Railway dashboard fields are the authoritative settings; `railway.json` only mirrors
+them, so a change made in the repository still has to be applied in the dashboard (or the
+other way round). In the deployment this was measured on, the **pre-deploy field was blank
+until it was set by hand** to `pnpm db:deploy`; the migrations then ran before the new
+release started. The four values to keep in step:
+
+| Dashboard field | Value |
+| --- | --- |
+| Build | `pnpm build` |
+| Pre-deploy | `pnpm db:deploy` |
+| Start | `pnpm start` |
+| Healthcheck | `/api/health` (timeout 120 s) |
+
+The build needs no database, no Qloo key and no Gemini key; `pnpm start` binds `$PORT` on
+0.0.0.0; `pnpm db:deploy` is `prisma migrate deploy`, which needs `DATABASE_URL` only and is
+idempotent; `/api/health` answers `200 {ok,db}`.
 
 On failure the service restarts, up to 10 times. The build needs no secret: `prisma generate`
 runs in install/build and never opens a connection, so a first deploy can succeed before the
 variables are filled in — but the app stops at boot, loudly and by name only, if
 `DATABASE_URL` is absent or `SESSION_SECRET` is missing or shorter than 32 characters.
+`pre-deploy` is what applies the migrations, so it has to actually run before the release
+starts: if the field is empty in the dashboard, the app boots against an unmigrated
+database.
 
 ### Variables
 
@@ -179,9 +196,9 @@ non-zero on anything required-and-absent or invalid.
 | `QLOO_MONTHLY_LIMIT` | no | 10000 | Contracted monthly requests, for the usage guard. |
 | `QLOO_USED_BASELINE` | no | 0 | Requests already spent on the same key before this deployment counted. |
 | `QLOO_CUSTOM_RESERVE` | no | 2000 | Below this remaining, custom live builds are refused. |
-| `TRUSTED_PROXY_HOPS` | no | 1 | Proxies appending to `X-Forwarded-For`. Railway adds one; leave it at 1. |
+| `TRUSTED_PROXY_HOPS` | no | 1 | Proxies appending to `X-Forwarded-For`. Measured as 2 in the Railway deployment this was built against; verify it per deployment (see below). |
 | `LIVE_GENERATIONS_PER_DAY` | no | 250 | Soft daily cap on uncached builds. |
-| `LLM_CALLS_PER_HOUR` | no | 120 | Above this, narration falls back to the template. |
+| `LLM_CALLS_PER_HOUR` | no | 120 | Above this, narration falls back to the template. Visitor traffic only: `pnpm warm` is an operator run and is not capped by it. |
 | `PACK_CACHE_TTL_HOURS` | no | 24 | Ordinary pack-cache TTL. |
 | `PRESET_CACHE_TTL_HOURS` | no | 72 | Preset freshness for `pnpm warm --check`; recommended production value `720`. Stored presets are still served to visitors after expiry. |
 | `LLM_PROVIDER` | no | inferred | `google` or `nebius`; empty infers Nebius when its three variables are set. |
@@ -203,12 +220,27 @@ and no model id the boot check reports `MODEL_CHAIN invalid (no model)`.
 
 ### How to verify `TRUSTED_PROXY_HOPS`
 
+The code default is 1 (`src/lib/config.ts`): one proxy appending one entry, the usual
+shape. **In the Railway deployment this was measured as 2.** `X-Forwarded-For` arrives
+there with two entries — the client first, Railway's own proxy second — and `X-Real-IP`
+equals the first entry, so `TRUSTED_PROXY_HOPS=2` is the value that points at the
+visitor. That is an observation from one deployment, not a promise about Railway: verify
+it again on any other one.
+
 Set `LOG_IP_PROBE=1` for a short window (it logs only the first five requests per process,
-never an address). Hit the site from two different networks and compare the `ip_probe`
-lines: each `tags=[…]` entry is a one-way fingerprint of one `X-Forwarded-For` hop. The tag
-that **changes** between the two visits is the visitor; the tags that stay the same are
-proxies. `derived_idx` must point at the visitor tag — if it points at a stable (proxy)
-tag, raise or lower `TRUSTED_PROXY_HOPS` until it does. Turn the probe off again when done.
+never an address) and hit the site from two different networks. Compare the `ip_probe`
+lines: each `tags=[…]` entry is a one-way fingerprint of one `X-Forwarded-For` hop, and
+`derived_idx` is the entry `TRUSTED_PROXY_HOPS` currently selects.
+
+- The tag that **changes** between the two visits is the visitor; the tags that stay the
+  same are proxies.
+- `derived_idx` must point at the changing tag, and `derived_private` must be `false`.
+  A `derived_private=true` from a real visitor means every visitor is sharing one bucket,
+  which is the failure this check exists to catch.
+- `xri` is the same fingerprint of `X-Real-IP`, so when the two agree they are the same
+  address.
+
+Turn the probe off (`LOG_IP_PROBE` unset or `0`) as soon as the check is done.
 
 ### One instance
 
@@ -220,26 +252,52 @@ half their own rate limit by reconnecting.
 
 A fresh database serves no preset from cache, so the first visitor's click would spend Qloo
 and Gemini and take 8–20 s. Warm the six preset rows first, from a machine that can reach
-the deployment's database:
+the deployment's database. The connection string is typed at a hidden prompt, never as an
+argument:
 
 ```bash
-# DATABASE_URL in the shell wins over .env; Qloo and Gemini keys still come from .env
-DATABASE_URL='<the deployment connection string>' pnpm warm --confirm-remote
-DATABASE_URL='<the deployment connection string>' pnpm warm --check --confirm-remote
+pnpm warm:remote --check        # read the six stored rows; spends nothing
+pnpm warm:remote --until-ok     # rebuild the rows that are not llm yet
+pnpm warm:remote --only roots-gt-la:es
 ```
 
-`pnpm warm` refuses any non-local database unless `--confirm-remote` is passed, prints only
-`local` or `remote` (never the host), and asks again on every run — so warming production by
-accident is not possible. `--check` reads the six stored rows without spending anything and
-exits non-zero if any is missing for the current `PIPELINE_VERSION` or still on template
-narration; a stale-but-present row is a warning, not a failure. Re-run the remote warm after
-any change that bumps `PIPELINE_VERSION`, and once more after the feature freeze.
+`pnpm warm:remote` refuses when stdin is not a TTY (there would be no way to hide the
+value), when the string is empty, not a Postgres URL, or points at localhost — for a local
+database `pnpm warm` is the command you want. It prints the word `remote`, requires a typed
+`yes`, and then runs `warm` with the string **only in the child process environment**: it is
+never written to a file, echoed, logged, put in the shell history or left in the parent's
+environment. The `--check`, `--until-ok`, `--only`, `--max-rounds` and `--pause-s` flags are
+forwarded, and `--confirm-remote` is implied.
+
+**The Postgres TCP proxy has to be enabled while it runs, and removed afterwards.** The
+warm reaches the deployment's database directly; the app in between does not need it. After
+the warm, delete the proxy (and `LOG_IP_PROBE`, if it was on).
+
+`pnpm warm` itself refuses any non-local database unless `--confirm-remote` is passed,
+prints only `local` or `remote` (never the host), and asks again on every run — so warming
+production by accident is not possible. `--check` reads the six stored rows without spending
+anything and exits non-zero if any is missing for the current `PIPELINE_VERSION` or still on
+template narration; a stale-but-present row is a warning, not a failure.
 
 Then verify the deployment itself:
 
 ```bash
 E2E_BASE_URL=https://<host> pnpm e2e -- --profile prod
 ```
+
+### Before judging
+
+- `pnpm warm:remote --check` exits 0 — all six rows `llm`, none on template narration. A
+  `fail:missing` row means the deployment's cache is cold; a `fail:template` row means the
+  narration is still the fallback.
+- Gemini's free tier is capped **per day and per model**, so a chain with two fallbacks is
+  really one model once its own daily quota is spent. Billing enabled on the Google project
+  removes that daily ceiling; without it, re-run the warm after the reset (the early stop
+  above prints the time).
+- Re-warm after any change that bumps `PIPELINE_VERSION` (the signature includes it, so
+  every stored row becomes a miss), and once more after the feature freeze.
+- `LOG_IP_PROBE` is off.
+- The Postgres TCP proxy is removed.
 
 ## Limitations
 

@@ -10,8 +10,33 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
 }
 
+function boolEnv(name: string): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  return raw === "1" || raw === "true";
+}
+
 /** Block all live Qloo calls below this remaining monthly count. */
 export const QLOO_HARD_RESERVE = 800;
+
+/** Contracted Qloo requests for the calendar month, used by our own usage counter. */
+export const QLOO_MONTHLY_LIMIT = intEnv("QLOO_MONTHLY_LIMIT", 10000);
+
+/**
+ * Requests already spent against the same key before this deployment started
+ * counting (for example from a developer machine). Subtracted from the monthly
+ * allowance so the guard reflects the real remaining quota.
+ */
+export const QLOO_USED_BASELINE = intEnv("QLOO_USED_BASELINE", 0);
+
+/**
+ * Temporary diagnostic. When on, the first few requests log how many
+ * X-Forwarded-For entries arrived and whether the derived client address looks
+ * private — enough to tell a wrong TRUSTED_PROXY_HOPS without logging an IP.
+ * Read at call time so it can be toggled without a rebuild.
+ */
+export function logIpProbeEnabled(): boolean {
+  return boolEnv("LOG_IP_PROBE");
+}
 
 /** Below this, refuse custom (non-preset, non-cached) generations; presets and cache still work. */
 export const QLOO_CUSTOM_RESERVE = intEnv("QLOO_CUSTOM_RESERVE", 2000);

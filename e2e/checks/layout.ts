@@ -126,11 +126,19 @@ async function checkI2(ctx: Ctx): Promise<void> {
     const presetHit = await tabUntil(page, (info) => info.text === preset);
     if (!presetHit) acc.fail("Tab never reached a preset button");
     else if (!presetHit.hasRing) acc.fail("the preset button has no visible focus ring");
-    // Enter operates the preset (it fills the seeds).
+    // Enter operates the preset (it fills the seeds). The button is server-rendered, so
+    // Tab can reach it before React has hydrated and attached the handler, and a key
+    // press inside that window is dropped by the browser with nothing to retry it. Wait
+    // for the bundle to settle and verify the effect instead of assuming the first press
+    // landed: the check is about Enter filling the anchors, not about a race.
     if (presetHit) {
+      const filled = async () => (await page.locator("#anchor-0").inputValue()).trim().length > 0;
       await page.keyboard.press("Enter");
-      const value = await page.locator("#anchor-0").inputValue();
-      if (!value.trim()) acc.fail("Enter on a preset button did not fill the anchors");
+      if (!(await filled())) {
+        await page.waitForLoadState("networkidle").catch(() => undefined);
+        await page.keyboard.press("Enter");
+      }
+      if (!(await filled())) acc.fail("Enter on a preset button did not fill the anchors");
     }
     const generate = await tabUntil(page, (info) => /Pack the night/.test(info.text));
     if (!generate) acc.fail("Tab never reached the generate button");

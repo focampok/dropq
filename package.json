@@ -21,6 +21,7 @@
     "probe:round3": "tsx scripts/probe-round3.ts",
     "probe:pass3d": "tsx scripts/probe-pass3d.ts",
     "warm": "tsx scripts/warm-presets.ts",
+    "warm:remote": "tsx scripts/warm-remote.ts",
     "verify:images": "tsx scripts/verify-images.ts",
     "verify:ui": "tsx scripts/verify-ui.ts",
     "verify:local": "tsx scripts/verify-local.ts",

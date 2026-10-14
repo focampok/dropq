@@ -72,10 +72,13 @@ describe("warm remote guard", () => {
 });
 
 describe("warm --check", () => {
-  it("fails missing, template, and stale rows", () => {
-    expect(
-      evaluateWarmCheck({ presetId: "p", locale: "en", row: null }).reason,
-    ).toBe("missing");
+  it("fails missing and template; stale-but-present is a warning only", () => {
+    const missing = evaluateWarmCheck({ presetId: "p", locale: "en", row: null });
+    expect(missing.reason).toBe("missing");
+    expect(missing.ok).toBe(false);
+    expect(missing.present).toBe(false);
+    expect(missing.freshness).toBe("n/a");
+    expect(missing.grade).toBe("missing");
 
     const template = evaluateWarmCheck({
       presetId: "p",
@@ -84,6 +87,8 @@ describe("warm --check", () => {
     });
     expect(template.ok).toBe(false);
     expect(template.reason).toBe("template");
+    expect(template.present).toBe(true);
+    expect(template.grade).toBe("template");
     expect(template.narration).toEqual({ A: "template", B: "template" });
 
     const stale = evaluateWarmCheck({
@@ -93,8 +98,11 @@ describe("warm --check", () => {
       nowMs: Date.parse("2026-10-12T00:00:00.000Z"),
       ttlHours: 72,
     });
-    expect(stale.ok).toBe(false);
+    expect(stale.ok).toBe(true);
     expect(stale.reason).toBe("stale");
+    expect(stale.freshness).toBe("stale");
+    expect(stale.grade).toBe("llm");
+    expect(stale.present).toBe(true);
 
     const ok = evaluateWarmCheck({
       presetId: "p",
@@ -104,6 +112,8 @@ describe("warm --check", () => {
     });
     expect(ok.ok).toBe(true);
     expect(ok.reason).toBeUndefined();
+    expect(ok.freshness).toBe("fresh");
+    expect(ok.grade).toBe("llm");
     expect(ok.modelUsed).toEqual({ A: "m", B: "m" });
   });
 

@@ -136,6 +136,7 @@ numeric(process.env.TRUSTED_PROXY_HOPS, "TRUSTED_PROXY_HOPS", "1");
 numeric(process.env.LIVE_GENERATIONS_PER_DAY, "LIVE_GENERATIONS_PER_DAY", "250");
 numeric(process.env.LLM_CALLS_PER_HOUR, "LLM_CALLS_PER_HOUR", "120");
 numeric(process.env.PACK_CACHE_TTL_HOURS, "PACK_CACHE_TTL_HOURS", "24");
+numeric(process.env.PRESET_CACHE_TTL_HOURS, "PRESET_CACHE_TTL_HOURS", "72");
 flag(process.env.LOG_IP_PROBE, "LOG_IP_PROBE");
 
 // --- LLM --------------------------------------------------------------------

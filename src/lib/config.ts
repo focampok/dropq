@@ -56,8 +56,12 @@ export const MAX_BODY_BYTES = 10 * 1024;
 /** Pack cache TTL for ordinary requests (hours). */
 export const PACK_CACHE_TTL_HOURS = intEnv("PACK_CACHE_TTL_HOURS", 24);
 
-/** Pack cache TTL for preset warm entries (hours). */
-export const PACK_CACHE_PRESET_TTL_HOURS = 72;
+/**
+ * Intended freshness window for preset warm rows (hours). Used when writing
+ * preset cache metadata and by `pnpm warm --check` (fresh vs stale). Visitor
+ * requests still serve a stored preset past this window — see `readPackCache`.
+ */
+export const PACK_CACHE_PRESET_TTL_HOURS = intEnv("PRESET_CACHE_TTL_HOURS", 72);
 
 /** Uncached pack generations per session cookie. */
 export const PACK_SESSION_LIMITS = [

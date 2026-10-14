@@ -100,10 +100,17 @@ export function warmTargets(): WarmTarget[] {
 export type WarmCheckRow = {
   presetId: string;
   locale: string;
+  /** Whether a PackCache row exists for the current pipeline signature. */
+  present: boolean;
   builtAt: string | null;
   ageHours: number | null;
+  /** Relative to `PRESET_CACHE_TTL_HOURS`; stale is a warning, not a failure. */
+  freshness: "fresh" | "stale" | "n/a";
+  /** Overall narration grade for the row (`llm` required for ok). */
+  grade: NarrationGrade | "missing";
   narration: { A: NarrationGrade | "missing"; B: NarrationGrade | "missing" };
   modelUsed: { A: string | null; B: string | null };
+  /** False only when missing or still on template narration. */
   ok: boolean;
   reason?: "missing" | "template" | "stale";
 };
@@ -137,8 +144,11 @@ export function evaluateWarmCheck(input: {
     return {
       presetId: input.presetId,
       locale: input.locale,
+      present: false,
       builtAt: null,
       ageHours: null,
+      freshness: "n/a",
+      grade: "missing",
       narration: { A: "missing", B: "missing" },
       modelUsed: { A: null, B: null },
       ok: false,
@@ -149,15 +159,20 @@ export function evaluateWarmCheck(input: {
   const a = planNarration(input.row.payload.packs.find((p) => p.label === "A"));
   const b = planNarration(input.row.payload.packs.find((p) => p.label === "B"));
   const grade = packNarrationGrade(input.row.payload);
+  const freshness: WarmCheckRow["freshness"] = ageHours > ttlHours ? "stale" : "fresh";
   let reason: WarmCheckRow["reason"];
   if (grade === "template") reason = "template";
-  else if (ageHours > ttlHours) reason = "stale";
-  const ok = !reason;
+  else if (freshness === "stale") reason = "stale";
+  // Missing or template fail the gate; stale-but-present is a warning only.
+  const ok = grade !== "template";
   return {
     presetId: input.presetId,
     locale: input.locale,
+    present: true,
     builtAt: input.row.builtAt.toISOString(),
     ageHours: Math.round(ageHours * 10) / 10,
+    freshness,
+    grade,
     narration: { A: a.grade, B: b.grade },
     modelUsed: { A: a.modelUsed, B: b.modelUsed },
     ok,
@@ -213,19 +228,27 @@ async function checkMode(): Promise<number> {
         : null,
     });
     if (!result.ok) failed += 1;
+    const status = !result.ok
+      ? `fail:${result.reason}`
+      : result.reason === "stale"
+        ? "warn:stale"
+        : "ok";
     console.log(
       formatWarmRowLine({
         presetId: result.presetId,
         locale: result.locale,
-        status: result.ok ? "ok" : `fail:${result.reason}`,
+        status,
         narration: result.narration,
         modelUsed: result.modelUsed,
         geminiCalls: 0,
         qlooCalls: 0,
-        extra:
-          result.builtAt == null
-            ? "age=n/a"
-            : `${result.builtAt} age_h=${result.ageHours}`,
+        extra: [
+          `present=${result.present}`,
+          `age_h=${result.ageHours ?? "n/a"}`,
+          `freshness=${result.freshness}`,
+          `grade=${result.grade}`,
+          result.builtAt ?? "builtAt=n/a",
+        ].join(" "),
       }),
     );
   }

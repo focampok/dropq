@@ -78,12 +78,23 @@ function ttlMs(isPreset: boolean): number {
   return (isPreset ? PACK_CACHE_PRESET_TTL_HOURS : PACK_CACHE_TTL_HOURS) * 60 * 60_000;
 }
 
+/** True when `builtAt` is older than the configured TTL for that row kind. */
+export function packCacheExpired(builtAt: Date, isPreset: boolean, nowMs = Date.now()): boolean {
+  return nowMs - builtAt.getTime() > ttlMs(isPreset);
+}
+
+/**
+ * Look up a cached pack by signature.
+ * - Missing row → null (caller may live-build).
+ * - Ordinary pack past TTL → null (hard miss).
+ * - Preset row → always served when present, even past TTL (age shown via cache note).
+ */
 export async function readPackCache(
   signature: string,
 ): Promise<{ payload: PackCachePayload; builtAt: Date; isPreset: boolean } | null> {
   const row = await prisma.packCache.findUnique({ where: { signature } });
   if (!row) return null;
-  if (Date.now() - row.builtAt.getTime() > ttlMs(row.isPreset)) return null;
+  if (!row.isPreset && packCacheExpired(row.builtAt, false)) return null;
   return {
     payload: row.payload as unknown as PackCachePayload,
     builtAt: row.builtAt,

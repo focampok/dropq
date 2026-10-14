@@ -101,20 +101,45 @@ describe("single flight", () => {
 });
 
 describe("cache TTL", () => {
-  it("treats expired rows as misses via ttl helper contract", () => {
-    // TTL constants are hours; expiry is covered by readPackCache against builtAt.
-    // Here we only assert signature + flight contracts stay pure (no timers needed).
-    vi.useFakeTimers();
-    const started = Date.now();
-    vi.setSystemTime(started);
-    const sig = packSignature({
-      entityIds: ["x"],
-      city: "Houston",
-      eventKind: "tour",
-      locale: "en",
+  it("serves expired presets and hard-misses expired ordinary packs", async () => {
+    const staleBuiltAt = new Date("2020-01-01T00:00:00.000Z");
+    const payload = payloadWith("llm", "llm");
+    const findUnique = vi.fn();
+    vi.doMock("@/lib/db", () => ({
+      prisma: { packCache: { findUnique, upsert: vi.fn() } },
+    }));
+    vi.resetModules();
+    const { readPackCache, packCacheExpired } = await import("@/lib/pack/cache");
+
+    expect(packCacheExpired(staleBuiltAt, true, Date.parse("2026-10-12T00:00:00.000Z"))).toBe(true);
+    expect(packCacheExpired(staleBuiltAt, false, Date.parse("2026-10-12T00:00:00.000Z"))).toBe(true);
+
+    findUnique.mockResolvedValueOnce({
+      signature: "sig-preset",
+      payload,
+      builtAt: staleBuiltAt,
+      qlooCalls: 0,
+      isPreset: true,
     });
-    expect(sig).toHaveLength(64);
-    vi.useRealTimers();
+    const presetHit = await readPackCache("sig-preset");
+    expect(presetHit).not.toBeNull();
+    expect(presetHit?.isPreset).toBe(true);
+    expect(presetHit?.builtAt).toEqual(staleBuiltAt);
+
+    findUnique.mockResolvedValueOnce({
+      signature: "sig-custom",
+      payload,
+      builtAt: staleBuiltAt,
+      qlooCalls: 0,
+      isPreset: false,
+    });
+    expect(await readPackCache("sig-custom")).toBeNull();
+
+    findUnique.mockResolvedValueOnce(null);
+    expect(await readPackCache("sig-missing")).toBeNull();
+
+    vi.doUnmock("@/lib/db");
+    vi.resetModules();
   });
 });
 

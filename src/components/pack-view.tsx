@@ -56,7 +56,9 @@ export function PackView({
     <div className="mx-auto max-w-6xl px-5 pb-16 md:px-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-xs uppercase tracking-[0.18em] text-paper/50">{pack?.city}</p>
+          <h1 className="text-xs uppercase tracking-[0.18em] text-paper/50">
+            {pack?.city ?? dictionary.brand}
+          </h1>
           <p className="mt-1 text-sm text-paper/70">
             {pack ? dictionary.eventKinds[pack.eventKind] : ""}
           </p>

@@ -1,6 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resetQlooRuntime, insights, search, tags, analysisCompare } from "@/lib/qloo/client";
+import {
+  resetQlooRuntime,
+  insights,
+  search,
+  tags,
+  analysisCompare,
+  acquireQlooSlot,
+} from "@/lib/qloo/client";
 import { QlooQuotaError } from "@/lib/qloo/types";
+
+// Keep the suite hermetic: the real counter talks to Postgres. The pure helpers
+// stay real so the guard's arithmetic is still exercised.
+vi.mock("@/lib/qloo/usage", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/qloo/usage")>();
+  return {
+    ...actual,
+    readMonthCount: vi.fn(async () => null),
+    countQlooRequest: vi.fn(async () => null),
+  };
+});
 
 const originalKey = process.env.QLOO_API_KEY;
 const originalBase = process.env.QLOO_BASE_URL;
@@ -88,21 +106,48 @@ describe("qloo client", () => {
   });
 
   it("never starts a fifth request inside the same second", async () => {
+    // The limiter claims slots synchronously against Date.now(), so the only
+    // faithful observation point is that clock. A real clock cannot be used
+    // here: any timestamp recorded after an `await` (even one microtask hop) is
+    // late by an unbounded scheduler delay, while the fifth call's resume is
+    // pinned to a timer, so the measured gap drifts below 1000 ms under load.
+    // Fake timers remove the jitter and assert the pacing exactly.
+    const starts: number[] = [];
+    vi.useFakeTimers();
+    try {
+      const pending = Promise.all(
+        Array.from({ length: 5 }, async () => {
+          await acquireQlooSlot();
+          starts.push(Date.now());
+        }),
+      );
+      // Flush the four immediate claims, then release the fifth.
+      await vi.advanceTimersByTimeAsync(1001);
+      await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(starts).toHaveLength(5);
+    const first = Math.min(...starts);
+    // With the clock frozen the four immediate claims land on one instant and
+    // the fifth, held back by the limiter, lands a full window later.
+    expect(starts.filter((t) => t === first)).toHaveLength(4);
+    expect(Math.max(...starts) - first).toBeGreaterThanOrEqual(1000);
+  });
+
+  it("paces five concurrent searches through the slot limiter", async () => {
     process.env.QLOO_API_KEY = "test-key";
     process.env.QLOO_BASE_URL = "https://hackathon.api.qloo.com";
-    const times: number[] = [];
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
-      times.push(Date.now());
-      return new Response(JSON.stringify({ results: [] }), { status: 200 });
-    });
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response(JSON.stringify({ results: [] }), { status: 200 }));
+
     await Promise.all(
       Array.from({ length: 5 }, () => search({ query: "q", type: "urn:entity:movie" })),
     );
-    expect(times[4]! - times[0]!).toBeGreaterThanOrEqual(1000);
-    for (const start of times) {
-      const inWindow = times.filter((time) => time >= start && time < start + 1000);
-      expect(inWindow.length).toBeLessThanOrEqual(4);
-    }
+
+    expect(fetchSpy).toHaveBeenCalledTimes(5);
   });
 
   it("blocks live calls when the monthly remaining header is below 800", async () => {

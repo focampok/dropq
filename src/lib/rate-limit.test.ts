@@ -6,9 +6,11 @@ import {
   llmHourlyAllowed,
   noteLiveGeneration,
   noteLlmHourlyCall,
+  operatorBypassEnabled,
   resetRateLimits,
+  setOperatorBypass,
 } from "@/lib/rate-limit";
-import { LLM_CALLS_PER_HOUR, LIVE_GENERATIONS_PER_DAY } from "@/lib/config";
+import { CHEAP_IP_LIMIT, LLM_CALLS_PER_HOUR, LIVE_GENERATIONS_PER_DAY } from "@/lib/config";
 import { sanitizeSeedText, seedsSchema } from "@/lib/session/schema";
 import { asDataBlock, validateNarrative } from "@/lib/pipeline/llm";
 import { safeServerError } from "@/lib/http";
@@ -69,6 +71,23 @@ describe("rate limits", () => {
     expect(llmHourlyAllowed()).toBe(false);
     vi.advanceTimersByTime(60 * 60_000 + 1);
     expect(llmHourlyAllowed()).toBe(true);
+  });
+
+  it("lifts the LLM hourly cap for an operator run, and only that cap", () => {
+    setOperatorBypass(true);
+    expect(operatorBypassEnabled()).toBe(true);
+    for (let i = 0; i < LLM_CALLS_PER_HOUR + 5; i++) noteLlmHourlyCall();
+    expect(llmHourlyAllowed()).toBe(true);
+    // The visitor-facing caps are untouched: only the hourly LLM cap reads the flag.
+    for (let i = 0; i < LIVE_GENERATIONS_PER_DAY; i++) noteLiveGeneration();
+    expect(liveGenerationAllowed()).toBe(false);
+    let cheapest = null;
+    for (let i = 0; i < CHEAP_IP_LIMIT.max + 1 && cheapest === null; i++) {
+      cheapest = enforceRateLimit(request("9.9.9.9"), "pack_cheap");
+    }
+    expect(cheapest).not.toBeNull();
+    resetRateLimits();
+    expect(operatorBypassEnabled()).toBe(false);
   });
 });
 

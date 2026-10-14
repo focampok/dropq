@@ -244,6 +244,7 @@ export function noteLiveGeneration(): void {
 
 /** Soft global Gemini hourly cap. */
 export function llmHourlyAllowed(): boolean {
+  if (operatorBypass) return true;
   const now = Date.now();
   cleanup(now);
   llmHourStamps = llmHourStamps.filter((stamp) => now - stamp < 60 * 60_000);
@@ -254,9 +255,27 @@ export function noteLlmHourlyCall(): void {
   llmHourStamps.push(Date.now());
 }
 
+/**
+ * Operator tools (`pnpm warm`) are not visitor traffic. Their own counters — the Qloo
+ * guard and usage counter, the Gemini kill switch, and the warm's own budgets — are the
+ * limits that matter, so the visitor-facing soft caps must not silently turn a six-row
+ * rebuild into a six-row template set. Only `llmHourlyAllowed` reads this today; the
+ * callers of `enforceRateLimit` are routes and are never reached by a script.
+ */
+let operatorBypass = false;
+
+export function setOperatorBypass(on: boolean): void {
+  operatorBypass = on;
+}
+
+export function operatorBypassEnabled(): boolean {
+  return operatorBypass;
+}
+
 export function resetRateLimits(): void {
   buckets.clear();
   liveDayStamps = [];
   llmHourStamps = [];
+  operatorBypass = false;
   lastCleanup = 0;
 }

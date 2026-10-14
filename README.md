@@ -104,7 +104,8 @@ The pack-cache signature includes `PIPELINE_VERSION` (`src/lib/pipeline/config.t
 | `QLOO_USED_BASELINE` | Qloo requests spent before this deployment counted (default 0) |
 | `LIVE_GENERATIONS_PER_DAY` | Soft daily live-generation cap |
 | `LLM_CALLS_PER_HOUR` | Soft hourly Gemini cap |
-| `PACK_CACHE_TTL_HOURS` | Pack cache TTL (presets use 72h) |
+| `PACK_CACHE_TTL_HOURS` | Ordinary pack-cache TTL (default 24h) |
+| `PRESET_CACHE_TTL_HOURS` | Preset freshness window for warm/check (default 72; prod tip 720) |
 | `DROPQ_LLM_BUDGET` | Per-process model-call cap (default uncapped) |
 | `LOG_IP_PROBE` | `1` logs a five-request client-IP diagnostic (default off) |
 
@@ -181,7 +182,8 @@ non-zero on anything required-and-absent or invalid.
 | `TRUSTED_PROXY_HOPS` | no | 1 | Proxies appending to `X-Forwarded-For`. Railway adds one; leave it at 1. |
 | `LIVE_GENERATIONS_PER_DAY` | no | 250 | Soft daily cap on uncached builds. |
 | `LLM_CALLS_PER_HOUR` | no | 120 | Above this, narration falls back to the template. |
-| `PACK_CACHE_TTL_HOURS` | no | 24 | Ordinary pack-cache TTL; preset rows use 72. |
+| `PACK_CACHE_TTL_HOURS` | no | 24 | Ordinary pack-cache TTL. |
+| `PRESET_CACHE_TTL_HOURS` | no | 72 | Preset freshness for `pnpm warm --check`; recommended production value `720`. Stored presets are still served to visitors after expiry. |
 | `LLM_PROVIDER` | no | inferred | `google` or `nebius`; empty infers Nebius when its three variables are set. |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | see note | — | Gemini key. Required when the Google provider is in use; `GEMINI_API_KEY` is accepted instead. |
 | `GEMINI_API_KEY` | no | — | Alternative Gemini key. |
@@ -220,7 +222,9 @@ DATABASE_URL='<the deployment connection string>' pnpm warm --check --confirm-re
 `pnpm warm` refuses any non-local database unless `--confirm-remote` is passed, prints only
 `local` or `remote` (never the host), and asks again on every run — so warming production by
 accident is not possible. `--check` reads the six stored rows without spending anything and
-exits non-zero if any is missing, still on the template, or stale.
+exits non-zero if any is missing for the current `PIPELINE_VERSION` or still on template
+narration; a stale-but-present row is a warning, not a failure. Re-run the remote warm after
+any change that bumps `PIPELINE_VERSION`, and once more after the feature freeze.
 
 Then verify the deployment itself:
 

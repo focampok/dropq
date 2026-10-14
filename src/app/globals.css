@@ -9,6 +9,9 @@
   --color-sheet: #f7f3ea;
   --color-ink: #1c1612;
   --color-stamp: #e24a1b;
+  /* Accent for text on the light surfaces: the brand orange only reaches 3.2:1
+     there, so small accent text uses this darker step of the same hue (>=4.5:1). */
+  --color-stamp-ink: #b8360f;
   --color-line: #e3d6c4;
 }
 

@@ -25,7 +25,7 @@ export function LanguageToggle({ locale }: { locale: Locale }) {
         onClick={() => choose("en")}
         label={dictionary.language.en}
       />
-      <span aria-hidden="true" className="px-1 text-paper/40">
+      <span aria-hidden="true" className="px-1 text-paper/50">
         |
       </span>
       <LangButton
@@ -52,7 +52,7 @@ function LangButton({
       aria-pressed={pressed}
       onClick={onClick}
       className={`rounded px-1.5 py-0.5 tracking-wide focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stamp ${
-        pressed ? "text-paper" : "text-paper/45 hover:text-paper"
+        pressed ? "text-paper" : "text-paper/50 hover:text-paper"
       }`}
     >
       {label}

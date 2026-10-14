@@ -104,7 +104,7 @@ export function PackView({
               data-state={state}
               className="min-w-36 flex-1 rounded-md border border-paper/15 bg-stage-raised px-3 py-2"
             >
-              <p className="font-mono text-[10px] uppercase tracking-wide text-paper/40">{stepId}</p>
+              <p className="font-mono text-[10px] uppercase tracking-wide text-paper/50">{stepId}</p>
               <p className="mt-1 text-sm text-paper">{dictionary.pack.steps[stepId]}</p>
               <p className="text-xs text-paper/50">{label}</p>
             </li>
@@ -165,7 +165,7 @@ export function PackView({
 
       {note ? (
         <p className="mt-8 text-sm text-paper/70">
-          <span className="mr-2 uppercase tracking-[0.14em] text-paper/45">
+          <span className="mr-2 uppercase tracking-[0.14em] text-paper/50">
             {dictionary.pack.coverage}
           </span>
           {note}
@@ -189,12 +189,12 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
     <Card>
       <CardHeader className="flex-row items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-ink/50">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-ink/65">
             {dictionary.slots[item.slot]}
           </p>
           <h3 className="mt-1 text-lg font-medium">{item.name}</h3>
           {cityChosen ? (
-            <p className="mt-1 text-xs uppercase tracking-[0.14em] text-ink/50">
+            <p className="mt-1 text-xs uppercase tracking-[0.14em] text-ink/65">
               {dictionary.pack.chosenForCity}
             </p>
           ) : null}
@@ -209,36 +209,36 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
           </div>
         ) : null}
         <div className="rounded-md bg-ink/[0.04] p-3">
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-ink/50">
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-ink/65">
             {dictionary.pack.whyQloo}
           </p>
           <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-            <dt className="text-ink/50">{dictionary.pack.name}</dt>
+            <dt className="text-ink/65">{dictionary.pack.name}</dt>
             <dd>{item.name}</dd>
-            <dt className="text-ink/50">{dictionary.pack.type}</dt>
+            <dt className="text-ink/65">{dictionary.pack.type}</dt>
             <dd title={item.type}>{dictionary.pack.entityTypes[entityTypeKey(item.type)]}</dd>
-            <dt className="text-ink/50">{dictionary.pack.entityId}</dt>
+            <dt className="text-ink/65">{dictionary.pack.entityId}</dt>
             <dd className="break-all font-mono text-xs">{item.entityId}</dd>
-            <dt className="text-ink/50">{dictionary.pack.hop}</dt>
+            <dt className="text-ink/65">{dictionary.pack.hop}</dt>
             <dd>{hopLabel(item, anchor, dictionary)}</dd>
             {item.affinity === null || item.affinity === undefined ? null : (
               <>
-                <dt className="text-ink/50">{dictionary.pack.affinity}</dt>
+                <dt className="text-ink/65">{dictionary.pack.affinity}</dt>
                 <dd>{item.affinity}</dd>
               </>
             )}
-            <dt className="text-ink/50">{dictionary.pack.confidence}</dt>
+            <dt className="text-ink/65">{dictionary.pack.confidence}</dt>
             <dd>
               {dictionary.pack.confidenceValue[item.confidence]}
               {item.confidence === "low" ? (
-                <span className="ml-2 uppercase tracking-[0.14em] text-stamp">
+                <span className="ml-2 uppercase tracking-[0.14em] text-stamp-ink">
                   {dictionary.pack.weakSignal}
                 </span>
               ) : null}
             </dd>
             {tags.length > 0 ? (
               <>
-                <dt className="text-ink/50">{dictionary.pack.hitTags}</dt>
+                <dt className="text-ink/65">{dictionary.pack.hitTags}</dt>
                 <dd>
                   <TagList tags={tags} locale={locale} />
                 </dd>
@@ -246,7 +246,7 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
             ) : null}
             {shared.length > 0 ? (
               <>
-                <dt className="text-ink/50">{dictionary.pack.sharedTags}</dt>
+                <dt className="text-ink/65">{dictionary.pack.sharedTags}</dt>
                 <dd>
                   <TagList tags={shared} locale={locale} />
                 </dd>
@@ -254,7 +254,7 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
             ) : null}
             {anchor ? (
               <>
-                <dt className="text-ink/50">{dictionary.pack.anchorEvidence}</dt>
+                <dt className="text-ink/65">{dictionary.pack.anchorEvidence}</dt>
                 <dd>
                   {anchor.sharedTags.length > 0 ? (
                     <TagList tags={anchor.sharedTags} locale={locale} />
@@ -264,13 +264,13 @@ function PackCard({ item, locale }: { item: AssembledItem; locale: Locale }) {
             ) : null}
             {explainability ? (
               <>
-                <dt className="text-ink/50">{dictionary.pack.explainability}</dt>
+                <dt className="text-ink/65">{dictionary.pack.explainability}</dt>
                 <dd className="break-all">{explainability}</dd>
               </>
             ) : null}
             {cityChosen ? (
               <>
-                <dt className="text-ink/50">{dictionary.pack.chosenForCity}</dt>
+                <dt className="text-ink/65">{dictionary.pack.chosenForCity}</dt>
                 <dd>{dictionary.pack.chosenForCityEvidence}</dd>
               </>
             ) : null}
@@ -298,7 +298,7 @@ function TagList({ tags, locale }: { tags: string[]; locale: Locale }) {
           type="button"
           data-tags-toggle
           onClick={() => setExpanded((value) => !value)}
-          className="ml-1 rounded border border-line px-1.5 text-xs text-ink/60 hover:bg-ink/5"
+          className="ml-1 rounded border border-line px-1.5 text-xs text-ink/65 hover:bg-ink/5"
         >
           {expanded
             ? dictionary.pack.lessTags

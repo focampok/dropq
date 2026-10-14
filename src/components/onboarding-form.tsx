@@ -102,7 +102,7 @@ export function OnboardingForm({ locale }: { locale: Locale }) {
       className="rounded-lg border border-line bg-sheet p-5 text-ink shadow-[0_24px_60px_rgba(0,0,0,0.28)] md:p-7"
     >
       <fieldset>
-        <legend className="text-xs font-semibold uppercase tracking-[0.16em] text-ink/55">
+        <legend className="text-xs font-semibold uppercase tracking-[0.16em] text-ink/65">
           {dictionary.onboarding.presets}
         </legend>
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
@@ -130,7 +130,7 @@ export function OnboardingForm({ locale }: { locale: Locale }) {
       </fieldset>
 
       <fieldset className="mt-6">
-        <legend className="text-xs font-semibold uppercase tracking-[0.16em] text-ink/55">
+        <legend className="text-xs font-semibold uppercase tracking-[0.16em] text-ink/65">
           {dictionary.onboarding.city}
         </legend>
         <div className="mt-3 flex flex-wrap gap-2">
@@ -150,7 +150,7 @@ export function OnboardingForm({ locale }: { locale: Locale }) {
       </fieldset>
 
       <fieldset className="mt-6">
-        <legend className="text-xs font-semibold uppercase tracking-[0.16em] text-ink/55">
+        <legend className="text-xs font-semibold uppercase tracking-[0.16em] text-ink/65">
           {dictionary.onboarding.eventKind}
         </legend>
         <div className="mt-3 flex flex-wrap gap-2">
@@ -170,10 +170,10 @@ export function OnboardingForm({ locale }: { locale: Locale }) {
       </fieldset>
 
       <fieldset className="mt-6">
-        <legend className="text-xs font-semibold uppercase tracking-[0.16em] text-ink/55">
+        <legend className="text-xs font-semibold uppercase tracking-[0.16em] text-ink/65">
           {dictionary.onboarding.anchors}
         </legend>
-        <p className="mt-2 text-sm text-ink/60">{dictionary.onboarding.anchorsHint}</p>
+        <p className="mt-2 text-sm text-ink/65">{dictionary.onboarding.anchorsHint}</p>
         <div className="mt-3 space-y-2">
           {seeds.map((seed, index) => (
             <div key={index} className="flex items-center gap-2">

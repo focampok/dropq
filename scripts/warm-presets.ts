@@ -2,21 +2,28 @@
  * Warm pinned presets into PackCache, or `--check` the stored rows (no network).
  * Never replaces an LLM-narrated row with a template one.
  *
- * Builds 3 presets × en/es = 6 rows. A failure or gemini budget hit on one row must
- * not abort the remaining rows (that left Spanish missing after the previous warm).
+ * Builds 3 presets × en/es = 6 rows. A failure or a Gemini budget hit on one row must
+ * not abort the remaining rows (that left Spanish missing after an earlier warm), and
+ * an LLM outage must not turn a row into `failed`: the pipeline degrades to rule B and
+ * the template on its own, so the row is written (or kept) and `reason=` names the
+ * cause. This is an operator tool, so the visitor-facing soft caps are lifted while it
+ * runs — see `setOperatorBypass`.
+ *
+ * Everything that decides a row's fate lives in `warm-run.ts`; this file is the CLI:
+ * the database target guard, the real dependencies, the flags and the exit code.
  */
 import { existsSync } from "node:fs";
 import { loadEnvFile } from "node:process";
 import { prisma } from "../src/lib/db";
-import { PACK_CACHE_PRESET_TTL_HOURS, QLOO_CUSTOM_RESERVE } from "../src/lib/config";
+import { PACK_CACHE_PRESET_TTL_HOURS } from "../src/lib/config";
 import { observedQlooCalls, qlooQuota } from "../src/lib/qloo/client";
 import { geminiCallCount, resetGeminiCallCount } from "../src/lib/llm/gemini-chain";
 import { llmConfigured, llmDisabled } from "../src/lib/llm/provider";
-import { geminiQuotaBlocked } from "../src/lib/pipeline/llm";
+import { geminiDailyExhaustion } from "../src/lib/pipeline/llm";
 import { PINNED_PRESETS } from "../src/lib/pipeline/config";
 import { runPipeline } from "../src/lib/pipeline/run";
+import { setOperatorBypass } from "../src/lib/rate-limit";
 import {
-  detectPresetFromPayload,
   packNarrationGrade,
   packSignature,
   snapshotSessionPacks,
@@ -24,12 +31,31 @@ import {
   type NarrationGrade,
   type PackCachePayload,
 } from "../src/lib/pack/cache";
+import {
+  LOCALES,
+  WARM_MAX_ROUNDS_DEFAULT,
+  WARM_MIN_PAUSE_S,
+  WARM_PAUSE_S_DEFAULT,
+  WarmArgError,
+  classifyBuildError,
+  numericArg,
+  onlySelectors,
+  planLlmReport,
+  runWarmRounds,
+  selectTargets,
+  stopLine,
+  summaryLine,
+  warmRowLine,
+  warmTargets,
+  type WarmBuild,
+  type WarmDeps,
+  type WarmLocale,
+  type WarmTarget,
+} from "./warm-run";
 
-export const LOCALES = ["en", "es"] as const;
-/** Enough for 6 rows × a few chain attempts; do not abort mid-matrix when one row is slow. */
-const GEMINI_BUDGET = 48;
-const WARM_ATTEMPTS = 3;
-const WARM_RETRY_PAUSE_MS = 2_000;
+export { LOCALES, warmTargets, warmRowLine, selectTargets };
+export type { WarmLocale, WarmTarget };
+
 /** Required to touch a database that is not on this machine. Never implied. */
 export const REMOTE_FLAG = "--confirm-remote";
 
@@ -79,24 +105,7 @@ function guardDatabaseTarget(): void {
   }
 }
 
-export type WarmLocale = (typeof LOCALES)[number];
-
-export type WarmTarget = {
-  presetId: (typeof PINNED_PRESETS)[number]["id"];
-  locale: WarmLocale;
-};
-
-/** Every preset × language the warm command must visit (6 rows). */
-export function warmTargets(): WarmTarget[] {
-  const out: WarmTarget[] = [];
-  for (const preset of PINNED_PRESETS) {
-    for (const locale of LOCALES) {
-      out.push({ presetId: preset.id, locale });
-    }
-  }
-  return out;
-}
-
+/** One row of `--check`: what is stored for a preset × language right now. */
 export type WarmCheckRow = {
   presetId: string;
   locale: string;
@@ -120,15 +129,8 @@ function planNarration(pack: PackCachePayload["packs"][number] | undefined): {
   modelUsed: string | null;
 } {
   if (!pack) return { grade: "missing", modelUsed: null };
-  const coverage = pack.coverage;
-  if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
-    return { grade: "template", modelUsed: null };
-  }
-  const llm = (coverage as { llm?: { narrative?: unknown; modelUsed?: { narrative?: unknown } } }).llm;
-  const grade: NarrationGrade = llm?.narrative === "llm" ? "llm" : "template";
-  const model =
-    typeof llm?.modelUsed?.narrative === "string" ? llm.modelUsed.narrative : null;
-  return { grade, modelUsed: model };
+  const llm = planLlmReport(pack);
+  return { grade: llm.narrative ?? "template", modelUsed: llm.modelUsed };
 }
 
 export function evaluateWarmCheck(input: {
@@ -180,46 +182,28 @@ export function evaluateWarmCheck(input: {
   };
 }
 
-/** One report line for a warmed or checked row (preset, lang, A/B narration, models, calls). */
-export function formatWarmRowLine(input: {
-  presetId: string;
-  locale: string;
-  status: string;
-  narration: { A: string; B: string };
-  modelUsed: { A: string | null; B: string | null };
-  geminiCalls: number;
-  qlooCalls: number;
-  extra?: string;
-}): string {
-  const parts = [
-    input.presetId,
-    input.locale,
-    input.status,
-    `A=${input.narration.A}`,
-    `B=${input.narration.B}`,
-    `modelA=${input.modelUsed.A ?? "none"}`,
-    `modelB=${input.modelUsed.B ?? "none"}`,
-    `gemini=${input.geminiCalls}`,
-    `qloo=${input.qlooCalls}`,
-  ];
-  if (input.extra) parts.push(input.extra);
-  return parts.join(" ");
+function presetById(presetId: WarmTarget["presetId"]): (typeof PINNED_PRESETS)[number] {
+  const preset = PINNED_PRESETS.find((row) => row.id === presetId);
+  if (!preset) throw new WarmArgError(`unknown preset "${presetId}"`);
+  return preset;
 }
 
-async function checkMode(): Promise<number> {
+function signatureFor(target: WarmTarget): string {
+  const preset = presetById(target.presetId);
+  const entityIds = preset.seeds.map((seed) => seed.entityId!).filter(Boolean);
+  return packSignature({
+    entityIds,
+    city: preset.city,
+    eventKind: preset.eventKind,
+    locale: target.locale,
+    mode: "default",
+  });
+}
+
+async function checkMode(targets: WarmTarget[]): Promise<number> {
   let failed = 0;
-  const targets = warmTargets();
   for (const target of targets) {
-    const preset = PINNED_PRESETS.find((row) => row.id === target.presetId)!;
-    const entityIds = preset.seeds.map((seed) => seed.entityId!).filter(Boolean);
-    const signature = packSignature({
-      entityIds,
-      city: preset.city,
-      eventKind: preset.eventKind,
-      locale: target.locale,
-      mode: "default",
-    });
-    const row = await prisma.packCache.findUnique({ where: { signature } });
+    const row = await prisma.packCache.findUnique({ where: { signature: signatureFor(target) } });
     const result = evaluateWarmCheck({
       presetId: target.presetId,
       locale: target.locale,
@@ -234,10 +218,13 @@ async function checkMode(): Promise<number> {
         ? "warn:stale"
         : "ok";
     console.log(
-      formatWarmRowLine({
+      warmRowLine({
         presetId: result.presetId,
-        locale: result.locale,
+        locale: target.locale,
         status,
+        reason: result.reason ?? "ok",
+        // `--check` reads stored rows: nothing was attempted in this process.
+        attempts: 0,
         narration: result.narration,
         modelUsed: result.modelUsed,
         geminiCalls: 0,
@@ -260,146 +247,69 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function buildOnce(
-  preset: (typeof PINNED_PRESETS)[number],
-  locale: WarmLocale,
-): Promise<{ payload: PackCachePayload; qlooCalls: number } | null> {
+/** A message safe to print: the Qloo key is never in it, and it stays one line. */
+function safeMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : "failed";
+  const key = process.env.QLOO_API_KEY ?? "";
+  return (key ? message.split(key).join("[redacted]") : message).replace(/\s+/g, " ").slice(0, 240);
+}
+
+/** One pack build in its own session, exactly as a visitor's first request does it. */
+async function buildOnce(target: WarmTarget): Promise<WarmBuild> {
+  const preset = presetById(target.presetId);
   const qlooBefore = observedQlooCalls();
-  const session = await prisma.session.create({
-    data: {
-      city: preset.city,
-      eventKind: preset.eventKind,
-      locale,
-      seeds: {
-        create: preset.seeds.map((seed) => ({ rawText: seed.rawText, source: "preset" })),
-      },
-    },
-  });
   try {
+    const session = await prisma.session.create({
+      data: {
+        city: preset.city,
+        eventKind: preset.eventKind,
+        locale: target.locale,
+        seeds: {
+          create: preset.seeds.map((seed) => ({ rawText: seed.rawText, source: "preset" })),
+        },
+      },
+    });
     await runPipeline(session.id, () => undefined);
+    const snap = await snapshotSessionPacks(session.id);
+    if (!snap) {
+      console.log(`${target.presetId}/${target.locale} build_error empty_snapshot`);
+      return { ok: false, reason: "build_error" };
+    }
+    return { ok: true, payload: snap, qlooCalls: Math.max(0, observedQlooCalls() - qlooBefore) };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "failed";
-    const key = process.env.QLOO_API_KEY ?? "";
-    const safe = key ? message.split(key).join("[redacted]") : message;
-    console.log(`${preset.id}/${locale} build_error ${safe}`);
-    return null;
+    console.log(`${target.presetId}/${target.locale} build_error ${safeMessage(error)}`);
+    return { ok: false, reason: classifyBuildError(error) };
   }
-  const snap = await snapshotSessionPacks(session.id);
-  if (!snap) {
-    console.log(`${preset.id}/${locale} empty`);
-    return null;
-  }
-  return { payload: snap, qlooCalls: Math.max(0, observedQlooCalls() - qlooBefore) };
 }
 
-function pickBetter(
-  left: { payload: PackCachePayload; qlooCalls: number } | null,
-  right: { payload: PackCachePayload; qlooCalls: number },
-): { payload: PackCachePayload; qlooCalls: number } {
-  if (!left) return right;
-  const leftGrade = packNarrationGrade(left.payload);
-  const rightGrade = packNarrationGrade(right.payload);
-  if (rightGrade === "llm" && leftGrade === "template") return right;
-  if (rightGrade === leftGrade) return right;
-  return left;
-}
-
-export type WarmOneOutcome = "ok" | "needs_rewarm" | "skipped_budget" | "skipped_quota" | "failed";
-
-async function warmOne(
-  preset: (typeof PINNED_PRESETS)[number],
-  locale: WarmLocale,
-): Promise<WarmOneOutcome> {
-  const started = Date.now();
-  const geminiBefore = geminiCallCount();
-  const entityIds = preset.seeds.map((seed) => seed.entityId!).filter(Boolean);
-  const signature = packSignature({
-    entityIds,
-    city: preset.city,
-    eventKind: preset.eventKind,
-    locale,
-    mode: "default",
-  });
-
-  const llmOn = llmConfigured() && !llmDisabled();
-  const attempts = llmOn ? WARM_ATTEMPTS : 1;
-  let best: { payload: PackCachePayload; qlooCalls: number } | null = null;
-  let skippedBudget = false;
-
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    if (geminiCallCount() >= GEMINI_BUDGET) {
-      skippedBudget = true;
-      break;
-    }
-    const quota = qlooQuota();
-    if (quota.blocked || (quota.remaining !== undefined && quota.remaining < QLOO_CUSTOM_RESERVE)) {
-      console.log(
-        formatWarmRowLine({
-          presetId: preset.id,
-          locale,
-          status: "skipped_quota_reserve",
-          narration: { A: "missing", B: "missing" },
-          modelUsed: { A: null, B: null },
-          geminiCalls: geminiCallCount() - geminiBefore,
-          qlooCalls: 0,
-        }),
-      );
-      return "skipped_quota";
-    }
-    if (llmOn && geminiQuotaBlocked()) break;
-
-    const built = await buildOnce(preset, locale);
-    if (!built) break;
-    best = pickBetter(best, built);
-    if (packNarrationGrade(best.payload) === "llm") break;
-    if (llmOn && geminiQuotaBlocked()) break;
-    if (attempt < attempts) await sleep(WARM_RETRY_PAUSE_MS);
-  }
-
-  if (!best) {
-    console.log(
-      formatWarmRowLine({
-        presetId: preset.id,
-        locale,
-        status: skippedBudget ? "skipped_gemini_budget" : "failed",
-        narration: { A: "missing", B: "missing" },
-        modelUsed: { A: null, B: null },
-        geminiCalls: geminiCallCount() - geminiBefore,
-        qlooCalls: 0,
-        extra: `ms=${Date.now() - started}`,
-      }),
-    );
-    return skippedBudget ? "skipped_budget" : "failed";
-  }
-
-  const result = await writePackCacheIfBetter({
-    signature,
-    payload: best.payload,
-    qlooCalls: best.qlooCalls,
-    isPreset: true,
-  });
-  const a = planNarration(best.payload.packs.find((p) => p.label === "A"));
-  const b = planNarration(best.payload.packs.find((p) => p.label === "B"));
-  const status =
-    result.grade === "template"
-      ? "needs_rewarm"
-      : result.wrote
-        ? "cached"
-        : "kept";
-  console.log(
-    formatWarmRowLine({
-      presetId: preset.id,
-      locale,
-      status,
-      narration: { A: a.grade, B: b.grade },
-      modelUsed: { A: a.modelUsed, B: b.modelUsed },
-      geminiCalls: geminiCallCount() - geminiBefore,
-      qlooCalls: best.qlooCalls,
-      extra: `ms=${Date.now() - started} preset=${detectPresetFromPayload(best.payload)}`,
-    }),
-  );
-  return result.grade === "template" ? "needs_rewarm" : "ok";
-}
+/**
+ * The real dependencies: this database, the real pipeline, the process-wide counters.
+ * Exported so the integration test can drive the same wiring it runs in production.
+ */
+export const productionDeps: WarmDeps = {
+  now: () => Date.now(),
+  sleep,
+  build: buildOnce,
+  readStored: async (target) => {
+    const row = await prisma.packCache.findUnique({ where: { signature: signatureFor(target) } });
+    return row ? { grade: packNarrationGrade(row.payload as unknown as PackCachePayload) } : null;
+  },
+  write: async ({ target, payload, qlooCalls }) => {
+    const result = await writePackCacheIfBetter({
+      signature: signatureFor(target),
+      payload,
+      qlooCalls,
+      isPreset: true,
+    });
+    return { wrote: result.wrote, grade: result.grade };
+  },
+  llm: () => ({ configured: llmConfigured(), disabled: llmDisabled() }),
+  geminiCalls: geminiCallCount,
+  qlooCalls: observedQlooCalls,
+  qlooQuota,
+  dailyExhaustion: geminiDailyExhaustion,
+  log: (line) => console.log(line),
+};
 
 async function main(): Promise<void> {
   // `loadEnvFile` never overrides a variable that is already in the process
@@ -407,34 +317,85 @@ async function main(): Promise<void> {
   // `.env` file only fills in what the shell left unset.
   if (existsSync(".env")) loadEnvFile(".env");
   guardDatabaseTarget();
-  const check = process.argv.includes("--check");
-  if (check) {
-    const code = await checkMode();
+  const argv = process.argv.slice(2);
+
+  let targets: WarmTarget[];
+  try {
+    targets = selectTargets(onlySelectors(argv));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "bad arguments");
+    process.exit(2);
+  }
+
+  if (argv.includes("--check")) {
+    const code = await checkMode(targets);
     await prisma.$disconnect();
     process.exit(code);
   }
 
+  const untilOk = argv.includes("--until-ok");
+  let maxRounds = WARM_MAX_ROUNDS_DEFAULT;
+  let pauseS = WARM_PAUSE_S_DEFAULT;
+  try {
+    maxRounds = Math.max(1, numericArg(argv, "--max-rounds", WARM_MAX_ROUNDS_DEFAULT));
+    pauseS = Math.max(WARM_MIN_PAUSE_S, numericArg(argv, "--pause-s", WARM_PAUSE_S_DEFAULT));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "bad arguments");
+    process.exit(2);
+  }
+
+  // Operator tool, not visitor traffic: the hourly soft cap must not turn a six-row
+  // rebuild into a six-row template set. The Qloo guard, the Qloo usage counter and
+  // `LLM_DISABLED` all still apply.
+  setOperatorBypass(true);
   resetGeminiCallCount();
   // The LLM being off is not a reason to skip the rebuild: the pipeline version changed,
-  // so every stored row is a miss and the six rows still have to be rewritten with
-  // template narration. `pnpm warm` is run again after the daily Gemini quota resets to
-  // upgrade those same rows to LLM narration (an LLM row replaces a template row).
+  // so every stored row is a miss and the rows still have to be rewritten with template
+  // narration. Running the warm again after the daily quota resets upgrades those same
+  // rows to LLM narration (an LLM row replaces a template row).
   if (!llmConfigured() || llmDisabled()) {
     console.log("warm llm_off: writing template rows");
   }
 
-  const targets = warmTargets();
-  let ok = 0;
-  for (const target of targets) {
-    const preset = PINNED_PRESETS.find((row) => row.id === target.presetId)!;
-    const outcome = await warmOne(preset, target.locale);
-    if (outcome === "ok") ok += 1;
-    // Continue every remaining preset×locale — never abort the matrix early.
-  }
-  console.log(
-    `warm done ${ok}/${targets.length} llm_rows gemini=${geminiCallCount()} qloo=${observedQlooCalls()}`,
+  const result = await runWarmRounds(
+    targets,
+    { untilOk, maxRounds, pauseMs: pauseS * 1000 },
+    productionDeps,
   );
+
+  for (const row of result.rows) {
+    console.log(warmRowLine({ ...row, extra: `ms=${row.ms}` }));
+  }
+  const stop = stopLine(result.stop, result.resetMs);
+  if (stop) console.log(stop);
+  const llmRows = targets.length - (await countPending(targets));
+  console.log(
+    summaryLine({
+      rows: result.rows,
+      rounds: result.rounds,
+      geminiCalls: geminiCallCount(),
+      qlooCalls: observedQlooCalls(),
+      targets: targets.length,
+      llmRows,
+    }),
+  );
+
   await prisma.$disconnect();
+  const failed = result.rows.some((row) => row.status === "failed") ? 1 : 0;
+  if (result.stop === "all_llm") process.exit(0);
+  if (result.stop === "single_round") process.exit(failed);
+  process.exit(1);
+}
+
+/** Rows still not `llm` in the store, for the summary's `llm_rows=` count. */
+async function countPending(targets: WarmTarget[]): Promise<number> {
+  let pending = 0;
+  for (const target of targets) {
+    const row = await prisma.packCache.findUnique({ where: { signature: signatureFor(target) } });
+    const grade = row ? packNarrationGrade(row.payload as unknown as PackCachePayload) : "template";
+    if (grade !== "llm") pending += 1;
+  }
+  return pending;
 }
 
 const invoked =

@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   databaseTarget,
   evaluateWarmCheck,
-  formatWarmRowLine,
   LOCALES,
   REMOTE_FLAG,
   requiresRemoteConfirmation,
@@ -10,6 +9,7 @@ import {
 } from "./warm-presets";
 import type { PackCachePayload } from "../src/lib/pack/cache";
 import { PINNED_PRESETS } from "../src/lib/pipeline/config";
+import { warmRowLine } from "./warm-run";
 
 function payload(narrative: "llm" | "template", locale: "en" | "es" = "en"): PackCachePayload {
   return {
@@ -129,11 +129,7 @@ describe("warm --check", () => {
     expect(es.narration).toEqual({ A: "llm", B: "llm" });
     expect(es.modelUsed).toEqual({ A: "m", B: "m" });
 
-    const missingEs = evaluateWarmCheck({
-      presetId: "roots-gt-la",
-      locale: "es",
-      row: null,
-    });
+    const missingEs = evaluateWarmCheck({ presetId: "roots-gt-la", locale: "es", row: null });
     expect(missingEs.ok).toBe(false);
     expect(missingEs.reason).toBe("missing");
   });
@@ -147,17 +143,19 @@ describe("warm --check", () => {
     expect(targets.filter((row) => row.locale === "en")).toHaveLength(3);
     expect(new Set(targets.map((row) => row.presetId)).size).toBe(3);
 
-    const line = formatWarmRowLine({
+    const line = warmRowLine({
       presetId: "roots-gt-la",
       locale: "es",
       status: "cached",
+      reason: "ok",
+      attempts: 1,
       narration: { A: "llm", B: "llm" },
       modelUsed: { A: "gemini-3.1-flash-lite", B: "gemini-3.1-flash-lite" },
       geminiCalls: 2,
       qlooCalls: 0,
     });
     expect(line).toContain("roots-gt-la");
-    expect(line).toContain("es");
+    expect(line).toContain("cached reason=ok attempts=1");
     expect(line).toContain("A=llm");
     expect(line).toContain("B=llm");
     expect(line).toContain("modelA=gemini-3.1-flash-lite");

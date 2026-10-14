@@ -1,5 +1,7 @@
+import { QLOO_HARD_RESERVE } from "@/lib/config";
 import { qlooApiKey, resolveQlooBaseUrl } from "@/lib/qloo/config";
 import { fixtureSearch } from "@/lib/qloo/fixtures";
+import { countQlooRequest, readMonthCount, remainingFrom } from "@/lib/qloo/usage";
 import {
   serializeArray,
   toCompareSearchParams,
@@ -32,14 +34,44 @@ type Budget = { remaining: number; consecutive429: number };
 
 let budget: Budget | null = null;
 let observedCalls = 0;
-let monthRemaining: number | null = null;
+/** Last value of the `x-month-ratelimit-remaining` header, if we have seen one. */
+let headerRemaining: number | null = null;
+/** Our own countered requests this month, or null while the counter is unreachable. */
+let ownUsed: number | null = null;
+let ownUsedLoaded = false;
 let liveBlocked = false;
 const recentStarts: number[] = [];
 
+/**
+ * The guard value: the lower of our own counter and the last response header.
+ * Null only when neither is known (a cold process against an unreachable
+ * counter), in which case callers keep working and no block is raised.
+ */
+function quotaRemaining(): number | null {
+  return remainingFrom(ownUsedLoaded ? ownUsed : null, headerRemaining);
+}
+
+function recomputeBlocked(): void {
+  const remaining = quotaRemaining();
+  if (remaining !== null && remaining < QLOO_HARD_RESERVE) liveBlocked = true;
+}
+
+/**
+ * Load our own month count once per process. Failure is expected and harmless:
+ * the guard then falls back to the response header alone.
+ */
+async function ensureOwnUsage(): Promise<void> {
+  if (ownUsedLoaded) return;
+  ownUsedLoaded = true;
+  ownUsed = await readMonthCount();
+  recomputeBlocked();
+}
+
 export function qlooQuota(): { remaining?: number; blocked: boolean } {
-  return liveBlocked || monthRemaining !== null
-    ? { remaining: monthRemaining ?? undefined, blocked: liveBlocked }
-    : { blocked: false };
+  const remaining = quotaRemaining();
+  return remaining === null && !liveBlocked
+    ? { blocked: false }
+    : { remaining: remaining ?? undefined, blocked: liveBlocked };
 }
 
 export function observedQlooCalls(): number {
@@ -48,7 +80,9 @@ export function observedQlooCalls(): number {
 
 export function resetQlooRuntime(): void {
   budget = null;
-  monthRemaining = null;
+  headerRemaining = null;
+  ownUsed = null;
+  ownUsedLoaded = false;
   liveBlocked = false;
   observedCalls = 0;
   recentStarts.length = 0;
@@ -115,8 +149,8 @@ function noteQuota(headers: Record<string, string>) {
   if (raw === undefined) return;
   const value = Number(raw);
   if (!Number.isFinite(value)) return;
-  monthRemaining = value;
-  if (value < 800) liveBlocked = true;
+  headerRemaining = value;
+  recomputeBlocked();
 }
 
 function retryAfterMs(response: Response): number {
@@ -141,7 +175,18 @@ function rateHeadersFrom(response: Response): Record<string, string> {
 async function fetchOnce(url: URL, key: string, timeoutMs = TIMEOUT_MS): Promise<Response> {
   if (liveBlocked) throw new QlooQuotaError();
   await acquireQlooSlot();
+  // Our own persisted counter can refuse the call before it leaves, which the
+  // response header (only readable after a call is spent) cannot do.
+  await ensureOwnUsage();
+  if (liveBlocked) throw new QlooQuotaError();
   noteCall();
+  // Counted before the fetch: a request that fails or times out still spent
+  // quota, and a retry is counted again on its own pass.
+  const counted = await countQlooRequest();
+  if (counted !== null) {
+    ownUsed = counted;
+    ownUsedLoaded = true;
+  }
   const response = await fetch(url, {
     headers: headersFor(key),
     signal: AbortSignal.timeout(timeoutMs),

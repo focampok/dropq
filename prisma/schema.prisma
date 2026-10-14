@@ -210,3 +210,12 @@ model PackCache {
   @@index([builtAt])
   @@map("pack_cache")
 }
+
+/// Our own outbound Qloo request count, one row per UTC calendar month.
+model QlooUsage {
+  month     String   @id
+  count     Int      @default(0)
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("qloo_usage")
+}

@@ -30,6 +30,54 @@ export const LOCALES = ["en", "es"] as const;
 const GEMINI_BUDGET = 48;
 const WARM_ATTEMPTS = 3;
 const WARM_RETRY_PAUSE_MS = 2_000;
+/** Required to touch a database that is not on this machine. Never implied. */
+export const REMOTE_FLAG = "--confirm-remote";
+
+export type DatabaseTarget = "local" | "remote" | "missing";
+
+/**
+ * Which database this run would write to, from the `DATABASE_URL` host only.
+ *
+ * The point is to catch the expensive mistake — warming production while
+ * believing you are warming local, or the reverse — so an unparseable URL is
+ * reported as remote (the cautious answer).
+ */
+export function databaseTarget(url = process.env.DATABASE_URL): DatabaseTarget {
+  const raw = url?.trim();
+  if (!raw) return "missing";
+  try {
+    // Bracket-stripped: a non-special scheme keeps the IPv6 brackets in hostname.
+    const host = new URL(raw).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return host === "localhost" || host === "127.0.0.1" || host === "::1" ? "local" : "remote";
+  } catch {
+    return "remote";
+  }
+}
+
+/** A non-local target always needs the explicit flag, on every single run. */
+export function requiresRemoteConfirmation(target: DatabaseTarget, argv: string[]): boolean {
+  return target === "remote" && !argv.includes(REMOTE_FLAG);
+}
+
+/**
+ * Announce the target and refuse a remote one unless the operator said so.
+ * Prints only the word `local` or `remote`: never the host, the URL or any
+ * credential, so the output is safe to paste into a log or an issue.
+ */
+function guardDatabaseTarget(): void {
+  const target = databaseTarget();
+  if (target === "missing") {
+    console.error("DATABASE_URL is not set; nothing to warm.");
+    process.exit(2);
+  }
+  console.log(`warm database: ${target}`);
+  if (requiresRemoteConfirmation(target, process.argv)) {
+    console.error(
+      `refusing to warm a non-local database without ${REMOTE_FLAG}; re-run with it if this is intended`,
+    );
+    process.exit(2);
+  }
+}
 
 export type WarmLocale = (typeof LOCALES)[number];
 
@@ -331,7 +379,11 @@ async function warmOne(
 }
 
 async function main(): Promise<void> {
+  // `loadEnvFile` never overrides a variable that is already in the process
+  // environment, so `DATABASE_URL=... pnpm warm` targets that database and the
+  // `.env` file only fills in what the shell left unset.
   if (existsSync(".env")) loadEnvFile(".env");
+  guardDatabaseTarget();
   const check = process.argv.includes("--check");
   if (check) {
     const code = await checkMode();

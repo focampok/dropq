@@ -1,8 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  databaseTarget,
   evaluateWarmCheck,
   formatWarmRowLine,
   LOCALES,
+  REMOTE_FLAG,
+  requiresRemoteConfirmation,
   warmTargets,
 } from "./warm-presets";
 import type { PackCachePayload } from "../src/lib/pack/cache";
@@ -32,6 +35,41 @@ function payload(narrative: "llm" | "template", locale: "en" | "es" = "en"): Pac
     ],
   };
 }
+
+describe("warm remote guard", () => {
+  it("classifies the target by host only", () => {
+    expect(databaseTarget("postgresql://u:p@localhost:5432/db")).toBe("local");
+    expect(databaseTarget("postgresql://u:p@127.0.0.1:5432/db")).toBe("local");
+    expect(databaseTarget("postgresql://u:p@[::1]:5432/db")).toBe("local");
+    expect(databaseTarget("postgresql://u:p@db.example.internal:5432/db")).toBe("remote");
+    expect(databaseTarget("postgresql://u:p@10.0.0.9:5432/db")).toBe("remote");
+    expect(databaseTarget("")).toBe("missing");
+    expect(databaseTarget("   ")).toBe("missing");
+  });
+
+  it("falls back to DATABASE_URL when no URL is given", () => {
+    vi.stubEnv("DATABASE_URL", "postgresql://u:p@db.example.internal:5432/db");
+    expect(databaseTarget()).toBe("remote");
+    vi.stubEnv("DATABASE_URL", "postgresql://u:p@localhost:5432/db");
+    expect(databaseTarget()).toBe("local");
+    vi.stubEnv("DATABASE_URL", "");
+    expect(databaseTarget()).toBe("missing");
+    vi.unstubAllEnvs();
+  });
+
+  it("treats an unparseable URL as remote rather than assuming local", () => {
+    expect(databaseTarget("not a url")).toBe("remote");
+    expect(databaseTarget("postgresql://")).toBe("remote");
+  });
+
+  it("requires the flag for a remote target, on every run", () => {
+    expect(requiresRemoteConfirmation("remote", ["node", "warm"])).toBe(true);
+    expect(requiresRemoteConfirmation("remote", ["node", "warm", "--check"])).toBe(true);
+    expect(requiresRemoteConfirmation("remote", ["node", "warm", REMOTE_FLAG])).toBe(false);
+    // A local target never needs it.
+    expect(requiresRemoteConfirmation("local", ["node", "warm"])).toBe(false);
+  });
+});
 
 describe("warm --check", () => {
   it("fails missing, template, and stale rows", () => {

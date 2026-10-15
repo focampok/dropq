@@ -5,7 +5,11 @@
  * one confidence rule, the seed-family and wear filters, the seed reference tags and the
  * Spanish narration rule all change the stored cards.
  */
-export const PIPELINE_VERSION = "3i";
+/**
+ * 3j: wear candidates without known tags are rejected (fail closed); wear exclude
+ * keywords cover ice-cream / dessert brands; preset rows are validated before store.
+ */
+export const PIPELINE_VERSION = "3j";
 
 export const PLACE_STRATEGY: "s1" | "s2" | "s3" | "none" = "s3";
 export const PLACE_TIMEOUT_MS = 8000;
@@ -142,6 +146,13 @@ export const WEAR_EXCLUDE_TAG_KEYWORDS = [
   "airline",
   "hotel",
   "telecom",
+  // Confectionery / dessert brands are not apparel; whole-word match only.
+  // Avoid bare "candy"/"chocolate" — those strings appear in real apparel names.
+  "ice cream",
+  "gelato",
+  "dessert",
+  "confectionery",
+  "frozen dessert",
 ] as const;
 
 /**

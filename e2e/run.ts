@@ -275,12 +275,15 @@ async function main(): Promise<void> {
     // Cheap API checks first, then the browser flows, then the quota-spending ones.
     // `stop` is set by a fatal abort (a preset that is not in the cache) so the remaining
     // modules are never run: every id they would have reported is failed below instead.
+    // Prod: pack loads (A/B/H/I/K) run before G2/G3/G1. G2/G3 used to fire real pack
+    // traffic that shared the production per-IP cheap bucket with the suite.
     const stop = () => cacheMiss !== null;
     await guard("server", API_CHECKS.server!, () => runServerChecks(ctx));
     if (!stop()) await guard("sessions", API_CHECKS.sessions!, () => runSessionChecks(ctx));
-    if (!stop()) await guard("limits-api", API_CHECKS["limits-api"]!, () => runLimitApiChecks(ctx));
-    if (!stop() && profile === "prod") skipCheck(recorder, "G4", "limits-api", "profile");
-    if (!stop()) await guard("limits-messages", BROWSER_CHECKS.messages!, () => runLimitMessageChecks(ctx));
+    if (profile === "local") {
+      if (!stop()) await guard("limits-api", API_CHECKS["limits-api"]!, () => runLimitApiChecks(ctx));
+      if (!stop()) await guard("limits-messages", BROWSER_CHECKS.messages!, () => runLimitMessageChecks(ctx));
+    }
     if (!stop()) await guard("presets", BROWSER_CHECKS.presets!, () => runPresetChecks(ctx));
     if (!stop()) await guard("language", BROWSER_CHECKS.language!, () => runLanguageChecks(ctx));
     if (!stop()) await guard("layout", BROWSER_CHECKS.layout!, () => runLayoutChecks(ctx));
@@ -291,6 +294,11 @@ async function main(): Promise<void> {
       for (const id of [...BROWSER_CHECKS.deepcuts!, ...BROWSER_CHECKS.live!]) skipCheck(recorder, id, "quota-spending", "profile");
     }
     if (!stop()) await guard("a11y", BROWSER_CHECKS.a11y!, () => runA11yChecks(ctx));
+    if (profile === "prod") {
+      if (!stop()) await guard("limits-messages", BROWSER_CHECKS.messages!, () => runLimitMessageChecks(ctx));
+      if (!stop()) await guard("limits-api", ["G1"], () => runLimitApiChecks(ctx));
+      skipCheck(recorder, "G4", "limits-api", "profile");
+    }
     if (cacheMiss) {
       const pending = (selection ? EXPECTED_IDS.filter((id) => selection.has(id)) : EXPECTED_IDS).filter(
         (id) => !recorder.results.some((result) => result.id === id),

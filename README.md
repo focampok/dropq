@@ -138,9 +138,23 @@ fails; a SKIP is never a pass.
   because browsers ignore it there and the header is gated on `NODE_ENV=production`.
 - `pnpm e2e:report` regenerates `report.html` and `summary.json` from the last run.
 
+**In the prod profile every preset load must be a cache hit.** The app answers a served
+preset with `X-DropQ-Cache: hit`; if any preset load comes back without it, the suite prints
+`ABORTED — <preset>/<language>: the pack response was not served from the stored cache` and
+stops immediately, failing every check it had not reported yet with `aborted on a preset
+cache miss`. The first such load is the only one that could have started a live build — the
+abort exists so the other eleven cannot. A cold deployment therefore fails fast and loudly
+instead of slowly and expensively.
+
 **Run the remote warm before a prod run.** A preset missing from `PackCache` fails A1 with
 `preset not warm: run the remote warm` and a load time over 1.5 s — the intended signal that
 the deployment's cache is cold, not a bug in the app.
+
+**The browser checks wait for `data-hydrated="true"`.** The app renders its controls disabled
+and sets that attribute on `<html>` from a client effect once React has attached the
+handlers, so a tap on a slow connection cannot become a native form submit (I5 is the check
+for that). Every check that clicks or types calls `waitForHydrated(page)` first; a page that
+never reports readiness fails with `the page never reported data-hydrated="true" on <html>`.
 
 The runner also cross-checks what was recorded against a manifest of every check id: a check
 that reports nothing, an id outside the manifest, a duplicate id, or a SKIP carrying an

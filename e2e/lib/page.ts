@@ -7,6 +7,30 @@ import type { BrowserContext, Page } from "playwright";
 export const DONE = 'li[data-step="done"][data-state="done"]';
 export const READY_MS = 120_000;
 
+/** The app sets this on `<html>` from a client effect, once its handlers are attached. */
+export const HYDRATED = 'html[data-hydrated="true"]';
+
+/**
+ * The app renders its controls server-side and gates them until React has hydrated, so a
+ * tap in the unhydrated window cannot become a native form submit. Every check that clicks
+ * or types must wait for that gate to lift instead of racing it: on a slow connection the
+ * gap is seconds, not milliseconds.
+ */
+export async function waitForHydrated(page: Page, timeout = READY_MS): Promise<void> {
+  try {
+    await page.waitForSelector(HYDRATED, { timeout, state: "attached" });
+  } catch {
+    throw new Error(
+      `the page never reported data-hydrated="true" on <html> within ${timeout} ms; the app is not interactive`,
+    );
+  }
+}
+
+/** Whether the app has already reported itself interactive. */
+export async function isHydrated(page: Page): Promise<boolean> {
+  return page.evaluate(() => document.documentElement.dataset.hydrated === "true");
+}
+
 /** Waiting for the 503-quota body is not an error; the live path can legitimately hit it. */
 export type LatestPlanItem = {
   slot: "watch" | "listen" | "wear" | "do";
@@ -92,6 +116,7 @@ export async function loadPreset(
   packLabel: RegExp | string,
 ): Promise<number> {
   await gotoHome(page, base);
+  await waitForHydrated(page);
   await page.getByRole("button", { name: presetLabel, exact: true }).click();
   const started = Date.now();
   await page.getByRole("button", { name: packLabel }).click();
@@ -107,6 +132,7 @@ export async function loadCustom(
   input: { seeds: string[]; cityLabel: string; kindLabel: string; packLabel: RegExp | string },
 ): Promise<number> {
   await gotoHome(page, base);
+  await waitForHydrated(page);
   for (let index = 0; index < input.seeds.length; index += 1) {
     await page.locator(`#anchor-${index}`).fill(input.seeds[index]!);
   }

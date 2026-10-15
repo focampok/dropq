@@ -7,7 +7,7 @@ import type { BrowserContext, Route } from "playwright";
 import { Acc, type Ctx } from "../lib/ctx";
 import { ApiJar, nextForwarded } from "../lib/harness";
 import { PRESET_SEEDS, dict, presetLabel } from "../lib/app";
-import { gotoHome, setLocaleCookie } from "../lib/page";
+import { gotoHome, setLocaleCookie, waitForHydrated } from "../lib/page";
 
 export async function runLimitApiChecks(ctx: Ctx): Promise<void> {
   await checkG1(ctx);
@@ -98,6 +98,7 @@ async function mockPackMessage(
     };
     await context.route("**/api/session/*/pack", handler);
     await gotoHome(page, ctx.base);
+    await waitForHydrated(page);
     await page.getByRole("button", { name: presetLabel(locale, "roots-gt-la"), exact: true }).click();
     await page.getByRole("button", { name: /Pack the night|Armar la noche/ }).click();
     await page.waitForURL(/\/pack\?session=/, { timeout: 60_000 });
@@ -117,6 +118,7 @@ async function mockPackMessage(
     // Still usable: unroute and load a real preset.
     await context.unroute("**/api/session/*/pack", handler);
     await gotoHome(page, ctx.base);
+    await waitForHydrated(page);
     await page.getByRole("button", { name: presetLabel(locale, "roots-gt-la"), exact: true }).click();
     await page.getByRole("button", { name: /Pack the night|Armar la noche/ }).click();
     await page.waitForURL(/\/pack\?session=/, { timeout: 60_000 });

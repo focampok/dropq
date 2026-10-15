@@ -24,6 +24,7 @@ import {
   type ConsoleIssues,
   type Latest,
   type SectionDom,
+  waitForHydrated,
 } from "../lib/page";
 
 const PACK_BUTTON_EN = /Pack the night/;
@@ -79,6 +80,7 @@ async function runCustom(ctx: Ctx, spec: Spec): Promise<LiveRun> {
     const page = await context.newPage();
     const issues = watchConsole(page);
     await gotoHome(page, ctx.base);
+    await waitForHydrated(page);
     for (let index = 0; index < spec.seeds.length; index += 1) {
       await page.locator(`#anchor-${index}`).fill(spec.seeds[index]!);
     }

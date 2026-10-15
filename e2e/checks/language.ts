@@ -6,7 +6,7 @@ import type { BrowserContext } from "playwright";
 import { Acc, type Ctx } from "../lib/ctx";
 import { nextForwarded } from "../lib/harness";
 import { dict, presetLabel } from "../lib/app";
-import { gotoHome, loadPreset, readLatest, scrape, waitForStreamDone, type CardDom } from "../lib/page";
+import { gotoHome, loadPreset, readLatest, scrape, waitForHydrated, waitForStreamDone, type CardDom } from "../lib/page";
 
 const PACK_BUTTON = /Pack the night|Armar la noche/;
 const PRESET = "roots-gt-la";
@@ -110,6 +110,7 @@ async function checkH2(ctx: Ctx): Promise<void> {
     });
     const page = await context.newPage();
     await gotoHome(page, ctx.base);
+    await waitForHydrated(page);
     const group = page.getByRole("group", { name: /Language|Idioma/ });
     const enPressed = await group.getByRole("button", { name: "EN", exact: true }).getAttribute("aria-pressed");
     if (enPressed !== "true") acc.fail(`the first visit is not English (EN aria-pressed=${enPressed})`);

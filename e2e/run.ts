@@ -32,7 +32,7 @@ const BROWSER_CHECKS: Record<string, string[]> = {
   presets: ["A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3", "B4", "B5", "B6"],
   messages: ["G2", "G3"],
   language: ["H1", "H2"],
-  layout: ["I1", "I2", "I3", "I4"],
+  layout: ["I1", "I2", "I3", "I4", "I5"],
   deepcuts: ["E1", "E2"],
   live: ["C1", "C2", "C3", "D1"],
   a11y: ["K1"],

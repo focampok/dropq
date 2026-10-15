@@ -9,10 +9,12 @@ import { nextForwarded, VIEWPORTS } from "../lib/harness";
 import { presetLabel } from "../lib/app";
 import {
   gotoHome,
+  isHydrated,
   loadPreset,
   readLatest,
   expandTagToggles,
   scrollThrough,
+  waitForHydrated,
   waitForStreamDone,
   watchConsole,
   type ConsoleIssues,
@@ -41,6 +43,7 @@ export async function runLayoutChecks(ctx: Ctx): Promise<void> {
   await checkI2(ctx);
   await checkI3(ctx);
   await checkI4(ctx);
+  await checkI5(ctx);
 }
 
 async function checkI1(ctx: Ctx): Promise<void> {
@@ -56,6 +59,7 @@ async function checkI1(ctx: Ctx): Promise<void> {
       screens.push([`onboarding@${viewport.name}`, await overflows(page, viewport.width, viewport.height)]);
     }
     await page.setViewportSize({ width: 1280, height: 800 });
+    await waitForHydrated(page);
     await page.getByRole("button", { name: presetLabel("en", PRESET), exact: true }).click();
     await page.getByRole("button", { name: PACK_BUTTON }).click();
     await page.waitForURL(/\/pack\?session=/, { timeout: 60_000 });
@@ -122,23 +126,18 @@ async function checkI2(ctx: Ctx): Promise<void> {
     context = await newContext(ctx);
     const page = await context.newPage();
     await gotoHome(page, ctx.base);
+    // Controls are disabled until the app is interactive, so wait for it: Tab would skip
+    // them and Enter would do nothing.
+    await waitForHydrated(page);
     const preset = presetLabel("en", PRESET);
     const presetHit = await tabUntil(page, (info) => info.text === preset);
     if (!presetHit) acc.fail("Tab never reached a preset button");
     else if (!presetHit.hasRing) acc.fail("the preset button has no visible focus ring");
-    // Enter operates the preset (it fills the seeds). The button is server-rendered, so
-    // Tab can reach it before React has hydrated and attached the handler, and a key
-    // press inside that window is dropped by the browser with nothing to retry it. Wait
-    // for the bundle to settle and verify the effect instead of assuming the first press
-    // landed: the check is about Enter filling the anchors, not about a race.
+    // Enter operates the preset (it fills the seeds).
     if (presetHit) {
-      const filled = async () => (await page.locator("#anchor-0").inputValue()).trim().length > 0;
       await page.keyboard.press("Enter");
-      if (!(await filled())) {
-        await page.waitForLoadState("networkidle").catch(() => undefined);
-        await page.keyboard.press("Enter");
-      }
-      if (!(await filled())) acc.fail("Enter on a preset button did not fill the anchors");
+      const value = await page.locator("#anchor-0").inputValue();
+      if (!value.trim()) acc.fail("Enter on a preset button did not fill the anchors");
     }
     const generate = await tabUntil(page, (info) => /Pack the night/.test(info.text));
     if (!generate) acc.fail("Tab never reached the generate button");
@@ -206,6 +205,76 @@ async function checkI3(ctx: Ctx): Promise<void> {
   acc.finish(ctx.recorder, Date.now() - started);
 }
 
+/** How long I5 holds the app's own bundles back, so hydration lands after the paint. */
+const HYDRATION_DELAY_MS = 4_000;
+
+/**
+ * The defect this check exists for: the onboarding form is server-rendered, so on a slow
+ * connection its submit button is tappable before React has attached the handler, and the
+ * tap becomes a native GET submit — the visitor lands on `/?` with nothing selected. The
+ * app now renders every client control disabled until a client effect reports hydration,
+ * so a tap in that window is inert; the same tap works once the page says it is ready.
+ */
+async function checkI5(ctx: Ctx): Promise<void> {
+  const started = Date.now();
+  const acc = new Acc("I5", "A click before hydration is inert; the same click works after it", "free");
+  let context: BrowserContext | null = null;
+  try {
+    context = await newContext(ctx);
+    const page = await context.newPage();
+    await page.route("**/_next/static/chunks/**", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, HYDRATION_DELAY_MS));
+      await route.continue();
+    });
+    await gotoHome(page, ctx.base);
+    if (await isHydrated(page)) {
+      acc.fail("the page reported itself hydrated while its own bundles were still held back");
+    }
+
+    const navigations: string[] = [];
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) navigations.push(new URL(frame.url()).pathname);
+    });
+
+    const packButton = page.getByRole("button", { name: PACK_BUTTON });
+    const presetButton = page.getByRole("button", { name: presetLabel("en", PRESET), exact: true });
+    if (!(await packButton.isDisabled().catch(() => false))) {
+      acc.fail("the pack button is enabled before hydration, so a tap submits the form natively");
+    }
+    if (!(await presetButton.isDisabled().catch(() => false))) {
+      acc.fail("a preset button is enabled before hydration, so a tap there does nothing");
+    }
+    // `force` skips Playwright's actionability wait on purpose: this is the slow-phone tap.
+    await packButton.click({ force: true, timeout: 5_000 }).catch(() => undefined);
+    await page.waitForTimeout(700);
+    await presetButton.click({ force: true, timeout: 5_000 }).catch(() => undefined);
+    await page.waitForTimeout(300);
+    if (navigations.length > 0) {
+      acc.fail(`a click before hydration navigated to ${navigations.join(" -> ")}`);
+    }
+    const where = new URL(page.url());
+    if (`${where.pathname}${where.search}` !== "/") {
+      acc.fail(`a click before hydration left the onboarding page at ${where.pathname}${where.search}`);
+    }
+    if ((await page.locator("#anchor-0").inputValue()).trim()) {
+      acc.fail("a click before hydration changed the anchors");
+    }
+
+    await waitForHydrated(page);
+    if (await packButton.isDisabled()) acc.fail("the pack button is still disabled after hydration");
+    await presetButton.click();
+    const filled = (await page.locator("#anchor-0").inputValue()).trim();
+    if (!filled) acc.fail("after hydration the same preset click did not fill the anchors");
+    else acc.note(`after hydration the preset click filled the first anchor in ${Date.now() - started} ms`);
+    acc.pass();
+  } catch (error) {
+    acc.fail(error instanceof Error ? error.message.split("\n")[0]! : String(error));
+  } finally {
+    await context?.close();
+  }
+  acc.finish(ctx.recorder, Date.now() - started);
+}
+
 async function checkI4(ctx: Ctx): Promise<void> {
   const started = Date.now();
   const acc = new Acc("I4", "A reload during streaming leaves the session usable", "free");
@@ -214,6 +283,7 @@ async function checkI4(ctx: Ctx): Promise<void> {
     context = await newContext(ctx);
     const page = await context.newPage();
     await gotoHome(page, ctx.base);
+    await waitForHydrated(page);
     await page.getByRole("button", { name: presetLabel("en", PRESET), exact: true }).click();
     await page.getByRole("button", { name: PACK_BUTTON }).click();
     await page.waitForURL(/\/pack\?session=/, { timeout: 60_000 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PackCachePayload } from "@/lib/pack/cache";
-import { validatePack } from "@/lib/pack/validate";
+import { validateCrossLanguageParity, validatePack } from "@/lib/pack/validate";
 
 function item(
   slot: "watch" | "listen" | "wear" | "do",
@@ -114,6 +114,28 @@ describe("validatePack", () => {
   it("rejects unresolved narration tokens", () => {
     expect(validatePack(pack({ narrativeA: "Tonight [[listen]] and [[missing]]." }))).toMatchObject({
       rule: "narration_tokens",
+    });
+  });
+});
+
+describe("validateCrossLanguageParity", () => {
+  it("accepts matching entity ids across languages", () => {
+    const en = pack();
+    const es = pack();
+    es.locale = "es";
+    es.packs[0]!.narrative = "Esta noche con Artist.";
+    expect(validateCrossLanguageParity(en, es)).toEqual({ ok: true });
+  });
+
+  it("rejects a mismatched Bridge wear slot", () => {
+    const en = pack();
+    const es = pack();
+    es.locale = "es";
+    es.packs[1]!.items[2] = item("wear", { qlooEntityId: "other-wear", qlooName: "Other Brand" });
+    expect(validateCrossLanguageParity(en, es)).toMatchObject({
+      ok: false,
+      rule: "cross_language_parity",
+      detail: "B:wear",
     });
   });
 });

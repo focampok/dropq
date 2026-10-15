@@ -19,13 +19,54 @@ export type PackValidationRule =
   | "wear_seed_family"
   | "wear_non_wearable"
   | "duplicate_shared_tags"
-  | "narration_tokens";
+  | "narration_tokens"
+  | "cross_language_parity";
 
 export type PackValidationResult =
   | { ok: true }
   | { ok: false; rule: PackValidationRule; detail?: string };
 
 const SLOTS = ["watch", "listen", "wear", "do"] as const;
+type Slot = (typeof SLOTS)[number];
+
+/** Per-slot entity ids for plans A and B — the language-neutral card fingerprint. */
+export function planSlotEntityIds(pack: PackCachePayload): Record<"A" | "B", Partial<Record<Slot, string>>> {
+  const out: Record<"A" | "B", Partial<Record<Slot, string>>> = { A: {}, B: {} };
+  for (const plan of pack.packs ?? []) {
+    if (plan.label !== "A" && plan.label !== "B") continue;
+    for (const item of plan.items) {
+      if ((SLOTS as readonly string[]).includes(item.slot)) {
+        out[plan.label][item.slot as Slot] = item.qlooEntityId.trim().toUpperCase();
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * EN and ES must recommend the same entities in every slot of both plans. Narration
+ * may differ; entity ids may not.
+ */
+export function validateCrossLanguageParity(
+  left: PackCachePayload,
+  right: PackCachePayload,
+): PackValidationResult {
+  const a = planSlotEntityIds(left);
+  const b = planSlotEntityIds(right);
+  for (const label of ["A", "B"] as const) {
+    for (const slot of SLOTS) {
+      const leftId = a[label][slot] ?? "";
+      const rightId = b[label][slot] ?? "";
+      if (!leftId || !rightId) {
+        return { ok: false, rule: "cross_language_parity", detail: `${label}:${slot}:missing` };
+      }
+      if (leftId !== rightId) {
+        return { ok: false, rule: "cross_language_parity", detail: `${label}:${slot}` };
+      }
+    }
+  }
+  return { ok: true };
+}
 const TOKEN_RE = /\[\[([a-z0-9]+)\]\]/gi;
 
 function hitTags(evidence: unknown): string[] {

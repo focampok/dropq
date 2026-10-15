@@ -28,6 +28,17 @@ describe("place slot", () => {
     expect(outcome.attempt).toMatchObject({ raw: 20, named: 20, afterRoots: 10 });
   });
 
+  it("rejects places whose tags are still unknown (fail closed for lodging)", async () => {
+    const load = vi.fn(async () => [card("bare-1", [])]);
+    const outcome = await fillPlaceSlot({
+      load,
+      rootsIds: new Set(),
+      fallbackRadius: PLACE_RADIUS_FALLBACK_M,
+      tagSets: [PRIMARY, FALLBACK],
+    });
+    expect(outcome.cards).toEqual([]);
+  });
+
   it("retries once at the wider radius and stops there", async () => {
     const radii: (number | undefined)[] = [];
     const load = vi.fn(async ({ radius }: { radius?: number }) => {

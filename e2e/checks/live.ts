@@ -54,7 +54,9 @@ type Spec = {
 const SPECS: Record<"C1" | "C2" | "D1", Spec> = {
   C1: { id: "C1", locale: "en", seeds: PRESET_SEEDS["roots-gt-la"]!, city: "Houston", kind: "comunidad" },
   C2: { id: "C2", locale: "es", seeds: PRESET_SEEDS["latin-tour-houston"]!, city: "New York", kind: "tour" },
-  D1: { id: "D1", locale: "en", seeds: PRESET_SEEDS["fandom-con-nyc"]!, city: "Los Angeles", kind: "con" },
+  // Houston, not Los Angeles: with fail-closed wear filtering, the LA hop-1 brand list for
+  // these seeds is all snacks/streaming, so Plan B would have no wearable left.
+  D1: { id: "D1", locale: "en", seeds: PRESET_SEEDS["fandom-con-nyc"]!, city: "Houston", kind: "con" },
 };
 
 type LiveRun = {

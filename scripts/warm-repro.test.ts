@@ -84,19 +84,26 @@ vi.mock("@/lib/qloo/cache", () => ({
   cachedInsights: async (args: { filterType?: string }, parts: { hop: number; exclude?: string[] }) => {
     const type = args.filterType ?? "urn:entity:artist";
     const excluded = new Set(parts.exclude ?? []);
-    const results = ["urn:entity:tv_show", "urn:entity:artist", "urn:entity:brand", "urn:entity:place"]
-      .map((entityType, index) => ({
-        entityId: `MOCK:${entityType}:${parts.hop}:${index}`,
-        name: `${entityType.split(":")[2]}-${parts.hop}-${index}`,
-        type: entityType,
-        imageUrl: null,
-        properties: {},
-        raw: {
-          entity_id: `MOCK:${entityType}:${parts.hop}:${index}`,
-          tags: [{ name: "Shared Tag" }, { name: "Apparel" }, { name: "Live Music" }],
-        },
-      }))
-      .filter((hit) => hit.type === type && !excluded.has(hit.entityId));
+    // `loadWatchHits` keeps the TV list only when it has at least 3 named shows; one
+    // hit would fall through to movies (which this mock does not serve) and empty watch.
+    const count = type === "urn:entity:tv_show" ? 3 : 1;
+    const tagFor =
+      type === "urn:entity:brand"
+        ? [{ name: "Shared Tag" }, { name: "Apparel" }]
+        : type === "urn:entity:place"
+          ? [{ name: "Shared Tag" }, { name: "Live Music" }]
+          : [{ name: "Shared Tag" }, { name: "Drama" }];
+    const results = Array.from({ length: count }, (_, index) => ({
+      entityId: `MOCK:${type}:${parts.hop}:${index}`,
+      name: `${(type.split(":")[2] ?? "hit")}-${parts.hop}-${index}`,
+      type,
+      imageUrl: null,
+      properties: {},
+      raw: {
+        entity_id: `MOCK:${type}:${parts.hop}:${index}`,
+        tags: tagFor,
+      },
+    })).filter((hit) => !excluded.has(hit.entityId));
     return { provenance: "qloo", results, raw: {} };
   },
 }));

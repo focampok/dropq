@@ -27,8 +27,15 @@ function isLodging(card: PlaceCard): boolean {
   return card.tags.slice(0, PLACE_LODGING_TAG_WINDOW).some((tag) => placeTagExcluded(tag));
 }
 
+/**
+ * A place with no tags cannot be cleared of lodging — fail closed, same idea as wear.
+ * Callers should fetch tags first via the entity-tag cache when the insight hit is bare.
+ */
 function isUsable(card: PlaceCard, rootsIds: Set<string>): boolean {
-  return Boolean(card.entityId.trim() && card.name.trim()) && !rootsIds.has(card.entityId) && !isLodging(card);
+  if (!card.entityId.trim() || !card.name.trim()) return false;
+  if (rootsIds.has(card.entityId)) return false;
+  if (card.tags.length === 0) return false;
+  return !isLodging(card);
 }
 
 export function placeStages<T extends PlaceCard>(raw: T[], rootsIds: Set<string>): PlaceStages {

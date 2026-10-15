@@ -103,9 +103,22 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
     return () => controller.abort();
 
     async function load(signal: AbortSignal): Promise<Latest | null> {
-      const latest = await fetch(`/api/session/${sessionId}/packs/latest`, { signal });
-      if (!latest.ok) return null;
-      return applyLatest((await latest.json()) as Latest);
+      // A cache-hit pack stream already paid the cheap limit; a brief 429 on the
+      // follow-up read must not leave a blank page. Retry a few times, then surface it.
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const latest = await fetch(`/api/session/${sessionId}/packs/latest`, { signal });
+        if (latest.status === 429) {
+          if (attempt === 3) {
+            setError(dictionary.pack.rateLimited);
+            return null;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+          continue;
+        }
+        if (!latest.ok) return null;
+        return applyLatest((await latest.json()) as Latest);
+      }
+      return null;
     }
 
     async function run(signal: AbortSignal) {

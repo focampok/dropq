@@ -305,7 +305,7 @@ export async function runPipeline(
     : await loadSlots(resolved.map((seed) => seed.entityId), session.city, eventKind, 0, new Map(), "a");
   const rootsRaw = rootsLoad.slots;
   const seedNamesForFilters = resolved.map((seed) => seed.name);
-  const roots = applySlotFilters(rootsRaw, seedNamesForFilters, append);
+  const roots = await applySlotFilters(rootsRaw, seedNamesForFilters, append);
   if (expired()) append("The pack timed out. What was ready is shown.", "El pack agotó el tiempo. Se muestra lo que alcanzó.");
   emit({ step: "insights_hop0", status: "done" });
 
@@ -327,8 +327,10 @@ export async function runPipeline(
   emit({ step: "insights_hop1", status: "active" });
   const excluded = new Map<PackSlot, string[]>();
   for (const slot of PACK_SLOTS) {
-    // Unfiltered on purpose: a card dropped by a filter must not come back at hop 1.
-    excluded.set(slot, (rootsRaw.get(slot) ?? []).map((card) => card.entityId));
+    // Dropped-by-filter cards must not return at hop 1. Unused wearables that passed the
+    // filter stay eligible so Plan B is not left with only snack/streaming brands after
+    // Plan A took the one good apparel hit.
+    excluded.set(slot, hop1ExcludeIds(rootsRaw.get(slot) ?? [], roots.get(slot) ?? []));
   }
   const bridgeLoad =
     expired() || anchorIds.length < 2
@@ -341,7 +343,7 @@ export async function runPipeline(
           excluded,
           options?.bridgeVariant === "deep" ? "deep" : "a",
         );
-  const bridge = applySlotFilters(bridgeLoad.slots, seedNamesForFilters, append);
+  const bridge = await applySlotFilters(bridgeLoad.slots, seedNamesForFilters, append);
   notePlaceOmission(bridgeLoad, append);
   emit({ step: "insights_hop1", status: "done" });
 
@@ -468,18 +470,73 @@ function listOf(names: readonly string[]): string {
 }
 
 /**
- * Drops the seeds' own family from every slot and non-wearables from `wear`, and says so
- * in `coverage`. Both filters read lists Qloo already returned, so neither costs a call.
- * A slot is never emptied by a filter: the fallback is reported, not silent.
+ * Ids hop 1 must not reuse: the card Plan A will show, plus every candidate the filters
+ * dropped. Other filter-passed candidates remain available as next-best picks for B.
  */
-function applySlotFilters(
-  slots: Map<PackSlot, Card[]>,
-  seedNames: readonly string[],
-  append: (en: string, es: string) => void,
-): Map<PackSlot, Card[]> {
+export function hop1ExcludeIds(
+  raw: readonly { entityId: string }[],
+  filtered: readonly { entityId: string }[],
+): string[] {
+  const kept = new Set(filtered.map((card) => card.entityId));
+  const chosen = filtered[0]?.entityId;
+  const dropped = raw
+    .map((card) => card.entityId)
+    .filter((id) => id.trim() && !kept.has(id));
+  return [...new Set([...(chosen ? [chosen] : []), ...dropped])];
+}
+
+/**
+ * Fill empty `card.tags` from the entity-tag cache (one batched GET /entities) so wear
+ * and do filters can fail closed instead of accepting unknown candidates on faith.
+ */
+async function ensureCardTags(slots: Map<PackSlot, Card[]>): Promise<Map<PackSlot, Card[]>> {
+  const missing: string[] = [];
+  for (const slot of PACK_SLOTS) {
+    if (slot !== "wear" && slot !== "do") continue;
+    for (const card of slots.get(slot) ?? []) {
+      if (card.tags.length === 0 && card.entityId.trim()) missing.push(card.entityId);
+    }
+  }
+  if (missing.length === 0) return slots;
+  let byId: Map<string, string[]>;
+  try {
+    byId = await cachedEntityTags(missing);
+  } catch (error) {
+    if (error instanceof QlooQuotaError) throw error;
+    byId = new Map();
+  }
   const out = new Map<PackSlot, Card[]>();
   for (const slot of PACK_SLOTS) {
     const cards = slots.get(slot) ?? [];
+    if (slot !== "wear" && slot !== "do") {
+      out.set(slot, cards);
+      continue;
+    }
+    out.set(
+      slot,
+      cards.map((card) => {
+        if (card.tags.length > 0) return card;
+        const tags = byId.get(card.entityId) ?? [];
+        return tags.length > 0 ? { ...card, tags: dedupeTags(tags) } : card;
+      }),
+    );
+  }
+  return out;
+}
+
+/**
+ * Drops the seeds' own family from every slot and non-wearables from `wear`, and says so
+ * in `coverage`. Wear/do tags are fetched first when missing so filters fail closed.
+ */
+async function applySlotFilters(
+  slots: Map<PackSlot, Card[]>,
+  seedNames: readonly string[],
+  append: (en: string, es: string) => void,
+): Promise<Map<PackSlot, Card[]>> {
+  const tagged = await ensureCardTags(slots);
+  const out = new Map<PackSlot, Card[]>();
+  for (const slot of PACK_SLOTS) {
+    const cards = tagged.get(slot) ?? [];
     const result = filterSlotCards(slot, cards, seedNames);
     out.set(slot, result.cards);
     if (result.seedFamilyDropped.length > 0) {
@@ -502,10 +559,10 @@ function applySlotFilters(
         `Todos los candidatos eran de la familia de las anclas; se conservó ${result.cards[0].name}.`,
       );
     }
-    if (result.keptFallback === "wear_tags" && result.cards[0]) {
+    if (result.keptFallback === "wear_tags") {
       append(
-        `No candidate looked wearable; ${result.cards[0].name} was kept.`,
-        `Ningún candidato parecía ropa; se conservó ${result.cards[0].name}.`,
+        "No wearable candidate remained after tag checks; the wear slot was left empty.",
+        "Ningún candidato de ropa quedó tras revisar etiquetas; el slot Llevar quedó vacío.",
       );
     }
   }
@@ -1426,7 +1483,7 @@ export async function refineBridge(
     !qlooApiKey() || anchorIds.length < 2
       ? { slots: emptySlots() }
       : await loadSlots(anchorIds, session.city, eventKind, 1, excluded, mode === "deep_cuts" ? "deep" : "a");
-  const bridgeSlots = applySlotFilters(bridgeLoad.slots, seedNames(session.seeds), append);
+  const bridgeSlots = await applySlotFilters(bridgeLoad.slots, seedNames(session.seeds), append);
   notePlaceOmission(bridgeLoad, append);
   emit({ step: "insights_hop1", status: "done" });
   if ((bridgeSlots.get("do") ?? []).some((card) => card.chosenByCity)) {

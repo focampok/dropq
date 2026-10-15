@@ -147,11 +147,14 @@ export async function launchBrowser(): Promise<Browser> {
 }
 
 let forwardedCounter = 0;
-const runOctet = Math.floor(Math.random() * 240) + 1;
-/** A fresh forwarded IP per step, so the app's per-IP limits model distinct visitors. */
+/**
+ * A fresh forwarded IP per step, so the app's per-IP limits model distinct visitors.
+ * Uses TEST-NET-2 (198.51.100.0/24), not RFC1918: a private address can look like a
+ * mis-derived proxy hop on Railway and collapse every check into one shared bucket.
+ */
 export function nextForwarded(): string {
   forwardedCounter += 1;
-  return `10.7.${runOctet}.${forwardedCounter % 250}`;
+  return `198.51.100.${1 + (forwardedCounter % 250)}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -7,6 +7,8 @@ import {
   isSeedFamilyName,
   normalizeSeedNames,
   tagPreview,
+  wearCandidateExcluded,
+  wearNameExcluded,
   wearTagsExcluded,
 } from "@/lib/pipeline/tags";
 
@@ -79,9 +81,16 @@ describe("wear exclusions", () => {
     expect(wearTagsExcluded(["Mobile App"])).toBe(true);
     expect(wearTagsExcluded(["Video game"])).toBe(true);
     expect(wearTagsExcluded(["Soft drink"])).toBe(true);
+    expect(wearTagsExcluded(["Ice Cream", "Dessert"])).toBe(true);
+    expect(wearNameExcluded("Häagen-Dazs Ice Cream")).toBe(true);
   });
 
-  it("drops non-wearables from wear only, and never empties the slot", () => {
+  it("fails closed when wear tags are unknown", () => {
+    expect(wearCandidateExcluded({ name: "Mystery Brand", tags: [] })).toBe(true);
+    expect(wearCandidateExcluded({ name: "Puma", tags: ["Apparel"] })).toBe(false);
+  });
+
+  it("drops non-wearables from wear only; empties wear rather than keeping a snack", () => {
     const candidates = [card("Nike Training Club app", ["Mobile app"]), card("Puma", ["Apparel"])];
     expect(
       filterSlotCards("wear", candidates, []).cards.map((entry) => entry.name),
@@ -92,8 +101,12 @@ describe("wear exclusions", () => {
     expect(listen.wearTagsDropped).toEqual([]);
 
     const allExcluded = filterSlotCards("wear", [card("Cheetos", ["Snack"])], []);
-    expect(allExcluded.cards.map((entry) => entry.name)).toEqual(["Cheetos"]);
+    expect(allExcluded.cards).toEqual([]);
     expect(allExcluded.keptFallback).toBe("wear_tags");
-    expect(allExcluded.wearTagsDropped).toEqual([]);
+    expect(allExcluded.wearTagsDropped).toEqual(["Cheetos"]);
+
+    const unknownTags = filterSlotCards("wear", [card("Häagen-Dazs", [])], []);
+    expect(unknownTags.cards).toEqual([]);
+    expect(unknownTags.wearTagsDropped).toEqual(["Häagen-Dazs"]);
   });
 });

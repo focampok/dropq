@@ -75,6 +75,25 @@ export function wearTagsExcluded(tags: readonly string[]): boolean {
   });
 }
 
+/**
+ * Keywords matched against a candidate's normalized name (same whole-word rule as tags).
+ * Used when tags are absent or incomplete so an ice-cream brand cannot slip through on name alone.
+ */
+export function wearNameExcluded(name: string): boolean {
+  const normalized = normalizeForMatch(name);
+  if (!normalized) return false;
+  return WEAR_EXCLUDE_TAG_KEYWORDS.some((keyword) => containsWholeWords(normalized, keyword));
+}
+
+/**
+ * Wear candidates whose tags are unknown must not be accepted on faith.
+ * Callers should fetch tags first; this still rejects an empty list.
+ */
+export function wearCandidateExcluded(card: { name: string; tags: readonly string[] }): boolean {
+  if (card.tags.length === 0) return true;
+  return wearTagsExcluded(card.tags) || wearNameExcluded(card.name);
+}
+
 export type SlotFilterFallback = "seed_family" | "wear_tags";
 
 export type SlotFilterResult<T> = {
@@ -86,10 +105,13 @@ export type SlotFilterResult<T> = {
 };
 
 /**
- * Client-side filters over the list Qloo already returned, so neither costs a request.
- * Every slot drops the seeds' own family; `wear` also drops candidates whose tags say
- * they are not wearable. A filter never empties a slot: when it would, the best card the
- * unfiltered list offered is kept and the reason is reported in `coverage`.
+ * Client-side filters over the list Qloo already returned (plus any tags the caller
+ * fetched into `card.tags`). Every slot drops the seeds' own family; `wear` also drops
+ * non-wearables and candidates whose tags are still unknown (fail closed).
+ *
+ * Seed-family still keeps the best unfiltered card rather than emptying a slot.
+ * Wear does **not**: keeping a snack brand would violate the product invariant, so an
+ * empty wear list is reported via `keptFallback` and left for validatePack / the picker.
  */
 export function filterSlotCards<T extends { name: string; tags: string[] }>(
   slot: PackSlot,
@@ -118,11 +140,11 @@ export function filterSlotCards<T extends { name: string; tags: string[] }>(
   const wearTagsDropped: string[] = [];
   const keptByTags: T[] = [];
   for (const card of keptBySeed) {
-    if (wearTagsExcluded(card.tags)) wearTagsDropped.push(card.name);
+    if (wearCandidateExcluded(card)) wearTagsDropped.push(card.name);
     else keptByTags.push(card);
   }
   if (keptByTags.length === 0) {
-    return { cards: keptBySeed, seedFamilyDropped, wearTagsDropped: [], keptFallback: "wear_tags" };
+    return { cards: [], seedFamilyDropped, wearTagsDropped, keptFallback: "wear_tags" };
   }
   return { cards: keptByTags, seedFamilyDropped, wearTagsDropped, keptFallback: null };
 }

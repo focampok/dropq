@@ -14,7 +14,7 @@ import {
   PLACE_RADIUS_FALLBACK_M,
   confidenceForSharedTags,
 } from "@/lib/pipeline/config";
-import { cardsToItems, packsToWrite } from "@/lib/pipeline/run";
+import { cardsToItems, hop1ExcludeIds, packsToWrite } from "@/lib/pipeline/run";
 import { insightArgs, loadPlaceHits, loadWatchHits, locationKey } from "@/lib/pipeline/requests";
 import { assemblePack } from "@/lib/pack/assemble";
 import { runIndependent } from "@/lib/pipeline/settle";
@@ -135,6 +135,15 @@ describe("pipeline decisions", () => {
     });
     expect(args?.filterExcludeEntities).toEqual(["root-1", "root-2"]);
     expect(args?.signalLocationQuery).toBe("Houston");
+  });
+
+  it("excludes the chosen Roots card and filter-dropped junk, not spare wearables", () => {
+    expect(
+      hop1ExcludeIds(
+        [{ entityId: "chosen" }, { entityId: "spare" }, { entityId: "junk" }],
+        [{ entityId: "chosen" }, { entityId: "spare" }],
+      ),
+    ).toEqual(["chosen", "junk"]);
   });
 
   it("keeps the other slots when the place call fails", async () => {

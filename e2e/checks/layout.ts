@@ -59,10 +59,10 @@ async function checkI1(ctx: Ctx): Promise<void> {
       screens.push([`onboarding@${viewport.name}`, await overflows(page, viewport.width, viewport.height)]);
     }
     await page.setViewportSize({ width: 1280, height: 800 });
-    await waitForHydrated(page);
-    await page.getByRole("button", { name: presetLabel("en", PRESET), exact: true }).click();
-    await page.getByRole("button", { name: PACK_BUTTON }).click();
-    await page.waitForURL(/\/pack\?session=/, { timeout: 60_000 });
+    await loadPreset(page, ctx.base, presetLabel("en", PRESET), PACK_BUTTON, {
+      requireCacheHit: ctx.profile === "prod",
+      where: "I1 roots-gt-la/en",
+    });
     for (const viewport of VIEWPORTS) {
       screens.push([`stream@${viewport.name}`, await overflows(page, viewport.width, viewport.height)]);
     }

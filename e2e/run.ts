@@ -285,6 +285,12 @@ async function main(): Promise<void> {
       if (!stop()) await guard("limits-messages", BROWSER_CHECKS.messages!, () => runLimitMessageChecks(ctx));
     }
     if (!stop()) await guard("presets", BROWSER_CHECKS.presets!, () => runPresetChecks(ctx));
+    // Prod shares one per-IP cheap bucket (60/min). After six preset loads, pause so H/I
+    // do not inherit a saturated window from A/B.
+    if (!stop() && profile === "prod") {
+      log("prod: pausing 65s for the per-IP cheap window before language/layout");
+      await new Promise((resolve) => setTimeout(resolve, 65_000));
+    }
     if (!stop()) await guard("language", BROWSER_CHECKS.language!, () => runLanguageChecks(ctx));
     if (!stop()) await guard("layout", BROWSER_CHECKS.layout!, () => runLayoutChecks(ctx));
     if (!stop() && profile === "local") {
@@ -296,6 +302,10 @@ async function main(): Promise<void> {
     if (!stop()) await guard("a11y", BROWSER_CHECKS.a11y!, () => runA11yChecks(ctx));
     if (profile === "prod") {
       if (!stop()) await guard("limits-messages", BROWSER_CHECKS.messages!, () => runLimitMessageChecks(ctx));
+      if (!stop()) {
+        log("prod: pausing 65s for the per-IP cheap window before G1");
+        await new Promise((resolve) => setTimeout(resolve, 65_000));
+      }
       if (!stop()) await guard("limits-api", ["G1"], () => runLimitApiChecks(ctx));
       skipCheck(recorder, "G4", "limits-api", "profile");
     }

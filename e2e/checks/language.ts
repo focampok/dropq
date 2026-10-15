@@ -75,6 +75,19 @@ async function checkH1(ctx: Ctx): Promise<void> {
     }
     // Cross-check against the app's own per-language row.
     const latest = await readLatest(page, ctx.base);
+    if (!Array.isArray(latest?.plans)) {
+      const rateLimitVisible = await page
+        .locator('[role="alert"]')
+        .first()
+        .textContent()
+        .then((text) => Boolean(text?.trim()))
+        .catch(() => false);
+      acc.fail(
+        `packs/latest after toggle had no plans (rate-limit UI=${rateLimitVisible ? "yes" : "no"}; body keys=${Object.keys(latest ?? {}).join(",") || "none"})`,
+      );
+      acc.finish(ctx.recorder, Date.now() - started);
+      return;
+    }
     const apiNames = new Map<string, string>(
       latest.plans.flatMap((plan) => plan.items.map((item) => [String(item.slot), item.name] as [string, string])),
     );

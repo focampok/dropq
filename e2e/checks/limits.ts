@@ -26,14 +26,30 @@ async function checkG1(ctx: Ctx): Promise<void> {
   const before = local ? await ctx.qlooBuiltSince(ctx.runStart) : 0;
 
   const jar = new ApiJar(ctx.base);
-  const session = await jar.json<{ id?: string }>("/api/session", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ city: "Los Angeles", eventKind: "tour", locale: "en" }),
-  });
+  const createSession = async () => {
+    const response = await jar.request("/api/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ city: "Los Angeles", eventKind: "tour", locale: "en" }),
+    });
+    const text = await response.text();
+    const body = text ? (JSON.parse(text) as { id?: string; error?: string }) : null;
+    return { status: response.status, body, retryAfter: response.headers.get("retry-after") };
+  };
+  let session = await createSession();
+  // Prod suite shares one IP bucket; a single Retry-After wait keeps G1 honest without a loop.
+  if (!session.body?.id && session.status === 429 && ctx.profile === "prod") {
+    const retryAfter = Number(session.retryAfter ?? "5");
+    const waitMs = Math.min(65_000, Math.max(1_000, (Number.isFinite(retryAfter) ? retryAfter : 5) * 1000));
+    acc.note(`prod: session create was 429; waiting ${waitMs} ms once for Retry-After`);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    session = await createSession();
+  }
   const id = session.body?.id;
   if (!id) {
-    acc.fail("could not create a session for the validation checks");
+    acc.fail(
+      `could not create a session for the validation checks (status=${session.status}, error=${session.body?.error ?? "none"}, Retry-After=${session.retryAfter ?? "absent"})`,
+    );
     acc.finish(ctx.recorder, Date.now() - started);
     return;
   }

@@ -282,6 +282,14 @@ async function checkI4(ctx: Ctx): Promise<void> {
   try {
     context = await newContext(ctx);
     const page = await context.newPage();
+    const sighting = { status: null as number | null, cache: null as string | null, retryAfter: null as string | null };
+    page.on("response", (response) => {
+      if (response.request().method() !== "POST") return;
+      if (!/\/pack$/.test(new URL(response.url()).pathname)) return;
+      sighting.status = response.status();
+      sighting.cache = response.headers()["x-dropq-cache"] ?? null;
+      sighting.retryAfter = response.headers()["retry-after"] ?? null;
+    });
     await gotoHome(page, ctx.base);
     await waitForHydrated(page);
     await page.getByRole("button", { name: presetLabel("en", PRESET), exact: true }).click();
@@ -289,7 +297,20 @@ async function checkI4(ctx: Ctx): Promise<void> {
     await page.waitForURL(/\/pack\?session=/, { timeout: 60_000 });
     // Reload as soon as the URL changes, before the stream can be consumed.
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.waitForSelector("section h3", { timeout: 90_000 });
+    try {
+      await page.waitForSelector("section h3", { timeout: 90_000 });
+    } catch (error) {
+      const rateLimitVisible = await page
+        .locator('[role="alert"]')
+        .first()
+        .textContent()
+        .then((text) => Boolean(text?.trim()))
+        .catch(() => false);
+      const cause = error instanceof Error ? error.message.split("\n")[0]! : String(error);
+      throw new Error(
+        `I4 roots-gt-la/en: ${cause}; last pack status=${sighting.status ?? "none"} Retry-After=${sighting.retryAfter ?? "absent"} X-DropQ-Cache=${sighting.cache ?? "absent"} rate-limit UI=${rateLimitVisible ? "yes" : "no"}`,
+      );
+    }
     const latest = await readLatest(page, ctx.base);
     if (latest.plans.length !== 2) acc.fail(`after the reload the pack has ${latest.plans.length} plans`);
     const slots = new Set(latest.plans.flatMap((plan) => plan.items.map((item) => item.slot)));

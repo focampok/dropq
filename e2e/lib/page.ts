@@ -109,6 +109,33 @@ export async function gotoHome(page: Page, base: string): Promise<void> {
   await page.goto(base, { waitUntil: "domcontentloaded" });
 }
 
+export type PackWaitSighting = {
+  status: number | null;
+  cache: string | null;
+  retryAfter: string | null;
+  rateLimitVisible: boolean;
+};
+
+/** Human-readable evidence when a pack POST never arrives or is not a cache hit. */
+export function formatPackWaitFailure(where: string, sighting: PackWaitSighting, cause: string): string {
+  const status = sighting.status === null ? "none" : String(sighting.status);
+  const cache = sighting.cache ?? "absent";
+  const retry = sighting.retryAfter ?? "absent";
+  const rate = sighting.rateLimitVisible ? "yes" : "no";
+  return `${where}: ${cause}; last pack status=${status} Retry-After=${retry} X-DropQ-Cache=${cache} rate-limit UI=${rate}`;
+}
+
+async function readPackWaitSighting(page: Page, last: PackWaitSighting): Promise<PackWaitSighting> {
+  const rateLimitVisible = await page
+    .evaluate(() => {
+      const alert = document.querySelector('[role="alert"]');
+      const text = (alert?.textContent ?? "").toLowerCase();
+      return Boolean(text && (text.includes("rate") || text.includes("límite") || text.includes("limite") || text.includes("slow")));
+    })
+    .catch(() => false);
+  return { ...last, rateLimitVisible: rateLimitVisible || last.rateLimitVisible };
+}
+
 /** Load a cached preset: click the preset, then pack. Returns ms from the pack click. */
 export async function loadPreset(
   page: Page,
@@ -121,28 +148,67 @@ export async function loadPreset(
   await waitForHydrated(page);
   await page.getByRole("button", { name: presetLabel, exact: true }).click();
   const started = Date.now();
+  const where = options.where ?? presetLabel;
+  const sighting: PackWaitSighting = {
+    status: null,
+    cache: null,
+    retryAfter: null,
+    rateLimitVisible: false,
+  };
+  const onResponse = (response: import("playwright").Response): void => {
+    if (response.request().method() !== "POST") return;
+    if (!/\/pack$/.test(new URL(response.url()).pathname)) return;
+    sighting.status = response.status();
+    sighting.cache = response.headers()["x-dropq-cache"] ?? null;
+    sighting.retryAfter = response.headers()["retry-after"] ?? null;
+  };
+  page.on("response", onResponse);
   const packResponse = options.requireCacheHit
     ? page.waitForResponse(
         (response) => response.request().method() === "POST" && /\/pack$/.test(new URL(response.url()).pathname),
         { timeout: READY_MS },
       )
     : null;
-  await page.getByRole("button", { name: packLabel }).click();
-  if (packResponse) {
-    // A preset that is not in the stored cache would trigger a live build, which spends
-    // Qloo and Gemini against production. The app marks a served row with this header, so
-    // its absence is the signal to stop the whole suite before anything is generated.
-    const response = await packResponse;
-    const cache = response.headers()["x-dropq-cache"];
-    if (cache !== "hit") {
-      throw new PresetCacheMissError(
-        `${options.where ?? presetLabel}: the pack response was not served from the stored cache (X-DropQ-Cache: ${cache ?? "absent"})`,
-      );
+  try {
+    await page.getByRole("button", { name: packLabel }).click();
+    if (packResponse) {
+      // A preset that is not in the stored cache would trigger a live build, which spends
+      // Qloo and Gemini against production. The app marks a served row with this header, so
+      // its absence is the signal to stop the whole suite before anything is generated.
+      let response: import("playwright").Response;
+      try {
+        response = await packResponse;
+      } catch (error) {
+        const seen = await readPackWaitSighting(page, sighting);
+        const cause = error instanceof Error ? error.message.split("\n")[0]! : String(error);
+        throw new Error(formatPackWaitFailure(where, seen, cause));
+      }
+      const cache = response.headers()["x-dropq-cache"];
+      sighting.status = response.status();
+      sighting.cache = cache ?? null;
+      sighting.retryAfter = response.headers()["retry-after"] ?? null;
+      if (cache !== "hit") {
+        const seen = await readPackWaitSighting(page, sighting);
+        if (response.status() === 429) {
+          throw new Error(
+            formatPackWaitFailure(where, seen, "pack request was rate-limited (429)"),
+          );
+        }
+        throw new PresetCacheMissError(
+          formatPackWaitFailure(
+            where,
+            seen,
+            `the pack response was not served from the stored cache`,
+          ),
+        );
+      }
     }
+    await page.waitForURL(/\/pack\?session=/, { timeout: READY_MS });
+    await waitForCards(page);
+    return Date.now() - started;
+  } finally {
+    page.off("response", onResponse);
   }
-  await page.waitForURL(/\/pack\?session=/, { timeout: READY_MS });
-  await waitForCards(page);
-  return Date.now() - started;
 }
 
 /** Load a custom pack by typing the seeds and choosing the city + kind. */

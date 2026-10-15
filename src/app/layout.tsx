@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Instrument_Serif, Outfit } from "next/font/google";
+import { HydrationSignal } from "@/components/hydration";
 import { checkBootEnv } from "@/lib/env-check";
 import { getDictionary } from "@/lib/i18n";
 import { readLocale } from "@/lib/i18n/locale";
@@ -30,7 +31,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const locale = await readLocale();
   return (
     <html lang={locale} className={`${outfit.variable} ${instrument.variable}`}>
-      <body className="font-sans antialiased">{children}</body>
+      <body className="font-sans antialiased">
+        <HydrationSignal />
+        {children}
+      </body>
     </html>
   );
 }

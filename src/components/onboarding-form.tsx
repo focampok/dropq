@@ -3,6 +3,7 @@
 import { Plus, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useHydrated } from "@/components/hydration";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,6 +24,7 @@ const MAX_SEEDS = 5;
 export function OnboardingForm({ locale }: { locale: Locale }) {
   const router = useRouter();
   const dictionary = getDictionary(locale);
+  const hydrated = useHydrated();
   const [city, setCity] = useState<CityValue>("Los Angeles");
   const [eventKind, setEventKind] = useState<EventKind>("tour");
   const [seeds, setSeeds] = useState<string[]>(["", "", ""]);
@@ -101,6 +103,13 @@ export function OnboardingForm({ locale }: { locale: Locale }) {
       onSubmit={onSubmit}
       className="rounded-lg border border-line bg-sheet p-5 text-ink shadow-[0_24px_60px_rgba(0,0,0,0.28)] md:p-7"
     >
+      {/*
+        One gate for every control in the form: presets, city, event kind, anchors and the
+        submit button stay disabled until the handlers exist. A disabled submit button cannot
+        be activated, so Enter and a tap are both inert instead of performing a native submit.
+        `contents` keeps the fieldset out of the layout, so nothing shifts when it lifts.
+      */}
+      <fieldset disabled={!hydrated} className="contents">
       <fieldset>
         <legend className="text-xs font-semibold uppercase tracking-[0.16em] text-ink/65">
           {dictionary.onboarding.presets}
@@ -223,6 +232,7 @@ export function OnboardingForm({ locale }: { locale: Locale }) {
       <Button type="submit" size="lg" className="mt-6 w-full" disabled={saving}>
         {saving ? dictionary.onboarding.saving : dictionary.onboarding.packNight}
       </Button>
+      </fieldset>
     </form>
   );
 }

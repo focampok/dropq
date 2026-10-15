@@ -6,10 +6,10 @@
  * Spanish narration rule all change the stored cards.
  */
 /**
- * 3j: wear candidates without known tags are rejected (fail closed); wear exclude
- * keywords cover ice-cream / dessert brands; preset rows are validated before store.
+ * 3k: card selection (anchors + every entity id) is shared across languages; a
+ * language row only narrates. Older en/es pairs may disagree on Bridge cards.
  */
-export const PIPELINE_VERSION = "3j";
+export const PIPELINE_VERSION = "3k";
 
 export const PLACE_STRATEGY: "s1" | "s2" | "s3" | "none" = "s3";
 export const PLACE_TIMEOUT_MS = 8000;

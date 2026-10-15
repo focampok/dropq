@@ -12,6 +12,7 @@ import {
   snapshotSessionPacks,
   writePackCache,
 } from "@/lib/pack/cache";
+import { validatePack } from "@/lib/pack/validate";
 import { observedQlooCalls, qlooQuota } from "@/lib/qloo/client";
 import { qlooApiKey } from "@/lib/qloo/config";
 import { QlooQuotaError } from "@/lib/qloo/types";
@@ -131,11 +132,17 @@ export async function POST(request: Request, context: RouteContext) {
             await runPipeline(id, emit, request.signal);
             const snap = await snapshotSessionPacks(id);
             if (!snap) throw new Error("pack_empty");
+            const isPreset = detectPresetFromPayload(snap);
+            // Never store a preset that breaks product invariants; the session still
+            // holds the built packs for this visitor.
+            if (isPreset && !validatePack(snap).ok) {
+              return { payload: snap, builtAt: new Date() };
+            }
             const builtAt = await writePackCache({
               signature,
               payload: snap,
               qlooCalls: Math.max(0, observedQlooCalls() - qlooBefore),
-              isPreset: detectPresetFromPayload(snap),
+              isPreset,
             });
             return { payload: snap, builtAt };
           });

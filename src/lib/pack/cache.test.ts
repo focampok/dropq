@@ -10,26 +10,58 @@ import {
 } from "@/lib/pack/cache";
 import { PIPELINE_VERSION } from "@/lib/pipeline/config";
 
+function slotItem(
+  slot: "watch" | "listen" | "wear" | "do",
+  id: string,
+): PackCachePayload["packs"][number]["items"][number] {
+  const meta = {
+    watch: { name: "Show", type: "urn:entity:tv_show", tags: ["Drama"] },
+    listen: { name: "Artist", type: "urn:entity:artist", tags: ["Pop"] },
+    wear: { name: "Puma", type: "urn:entity:brand", tags: ["Apparel"] },
+    do: { name: "Venue", type: "urn:entity:place", tags: ["Nightlife"] },
+  }[slot];
+  return {
+    slot,
+    position: 0,
+    hop: 0,
+    qlooEntityId: id,
+    qlooName: meta.name,
+    qlooType: meta.type,
+    imageUrl: null,
+    affinityScore: null,
+    explain: null,
+    evidence: { hitTags: meta.tags, sharedTags: [] },
+    confidence: "medium",
+    provenance: "qloo",
+  };
+}
+
 function payloadWith(narrativeA: "llm" | "template", narrativeB: "llm" | "template"): PackCachePayload {
+  const items = (prefix: string) =>
+    (["watch", "listen", "wear", "do"] as const).map((slot) => slotItem(slot, `${prefix}-${slot}`));
   return {
     city: "Houston",
     eventKind: "tour",
     locale: "en",
-    seeds: [],
+    seeds: [
+      { rawText: "Bad Bunny", source: "preset", resolvedEntityId: "s1", resolvedName: "Bad Bunny", domain: "artist" },
+      { rawText: "Karol G", source: "preset", resolvedEntityId: "s2", resolvedName: "Karol G", domain: "artist" },
+      { rawText: "Nike", source: "preset", resolvedEntityId: "s3", resolvedName: "Nike", domain: "brand" },
+    ],
     packs: [
       {
         label: "A",
         axis: "root",
-        narrative: "text",
+        narrative: "Tonight with Artist.",
         coverage: { llm: { narrative: narrativeA, modelUsed: { narrative: narrativeA === "llm" ? "m1" : null } } },
-        items: [],
+        items: items("a"),
       },
       {
         label: "B",
         axis: "bridge",
-        narrative: "text",
+        narrative: "Bridge with Puma.",
         coverage: { llm: { narrative: narrativeB, modelUsed: { narrative: narrativeB === "llm" ? "m1" : null } } },
-        items: [],
+        items: items("b"),
       },
     ],
   };

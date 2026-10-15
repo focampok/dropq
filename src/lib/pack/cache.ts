@@ -7,6 +7,7 @@ import {
 } from "@/lib/config";
 import { isPresetSession } from "@/lib/abuse";
 import { PIPELINE_VERSION } from "@/lib/pipeline/config";
+import { validatePack } from "@/lib/pack/validate";
 
 export type PackCacheMode = "default" | "deep_cuts";
 
@@ -173,6 +174,7 @@ export async function writePackCache(input: {
 
 /**
  * Never replace an LLM-narrated preset with a template one. Equal grade → newer wins.
+ * A preset that fails `validatePack` is never written; an existing valid row stays.
  * Returns whether the row was written.
  */
 export async function writePackCacheIfBetter(input: {
@@ -180,10 +182,23 @@ export async function writePackCacheIfBetter(input: {
   payload: PackCachePayload;
   qlooCalls: number;
   isPreset: boolean;
-}): Promise<{ wrote: boolean; builtAt: Date; grade: NarrationGrade }> {
+}): Promise<{ wrote: boolean; builtAt: Date; grade: NarrationGrade; invalidRule?: string }> {
+  const existing = await prisma.packCache.findUnique({ where: { signature: input.signature } });
+  if (input.isPreset) {
+    const validation = validatePack(input.payload);
+    if (!validation.ok) {
+      return {
+        wrote: false,
+        builtAt: existing?.builtAt ?? new Date(0),
+        grade: existing
+          ? packNarrationGrade(existing.payload as unknown as PackCachePayload)
+          : packNarrationGrade(input.payload),
+        invalidRule: validation.rule,
+      };
+    }
+  }
   const grade = packNarrationGrade(input.payload);
   const stamped = stampCacheNarration(input.payload, grade);
-  const existing = await prisma.packCache.findUnique({ where: { signature: input.signature } });
   if (existing) {
     const existingGrade = packNarrationGrade(existing.payload as unknown as PackCachePayload);
     if (!narrationGradeReplaces(grade, existingGrade)) {

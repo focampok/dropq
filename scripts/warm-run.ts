@@ -50,7 +50,9 @@ export type WarmReason =
   | "llm_error"
   | "qloo_guard"
   | "qloo_error"
-  | "build_error";
+  | "build_error"
+  /** `invalid:<rule>` from validatePack — the candidate was not written. */
+  | `invalid:${string}`;
 
 export type WarmTarget = {
   presetId: (typeof PINNED_PRESETS)[number]["id"];
@@ -82,12 +84,12 @@ export type WarmDeps = {
   build(target: WarmTarget): Promise<WarmBuild>;
   /** The stored cache row for this target, or null when there is none. */
   readStored(target: WarmTarget): Promise<{ grade: NarrationGrade } | null>;
-  /** Grade-aware write: `wrote` is false when the stored row is at least as good. */
+  /** Grade-aware write: `wrote` is false when the stored row is at least as good or invalid. */
   write(input: {
     target: WarmTarget;
     payload: PackCachePayload;
     qlooCalls: number;
-  }): Promise<{ wrote: boolean; grade: NarrationGrade }>;
+  }): Promise<{ wrote: boolean; grade: NarrationGrade; invalidRule?: string }>;
   llm(): { configured: boolean; disabled: boolean };
   geminiCalls(): number;
   qlooCalls(): number;
@@ -371,11 +373,34 @@ export async function warmOne(target: WarmTarget, deps: WarmDeps): Promise<WarmR
     payload: best.payload,
     qlooCalls: best.qlooCalls,
   });
+  if (result.invalidRule) {
+    const stored = await deps.readStored(target);
+    return rowFor({
+      target,
+      // An existing valid row stays; otherwise the matrix reports failed.
+      status: stored ? "kept" : "failed",
+      reason: `invalid:${result.invalidRule}`,
+      payload: best.payload,
+      ...spent(),
+      attempts,
+      ms: deps.now() - started,
+    });
+  }
+  if (!result.wrote) {
+    // Stored row is at least as good (llm kept over template, or equal grade kept).
+    return rowFor({
+      target,
+      status: "kept",
+      reason: grade === "llm" ? "ok" : llmReasonFor(best.payload),
+      payload: best.payload,
+      ...spent(),
+      attempts,
+      ms: deps.now() - started,
+    });
+  }
   return rowFor({
     target,
-    // `wrote: false` means the stored row is at least as good — an llm row that a
-    // template build must never replace.
-    status: grade === "llm" ? "cached" : result.wrote ? "template" : "kept",
+    status: grade === "llm" ? "cached" : "template",
     reason: grade === "llm" ? "ok" : llmReasonFor(best.payload),
     payload: best.payload,
     ...spent(),

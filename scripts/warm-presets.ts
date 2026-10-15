@@ -31,6 +31,7 @@ import {
   type NarrationGrade,
   type PackCachePayload,
 } from "../src/lib/pack/cache";
+import { validatePack } from "../src/lib/pack/validate";
 import {
   LOCALES,
   WARM_MAX_ROUNDS_DEFAULT,
@@ -200,8 +201,9 @@ function signatureFor(target: WarmTarget): string {
   });
 }
 
-async function checkMode(targets: WarmTarget[]): Promise<number> {
+async function checkMode(targets: WarmTarget[], validate: boolean): Promise<number> {
   let failed = 0;
+  let violations = 0;
   for (const target of targets) {
     const row = await prisma.packCache.findUnique({ where: { signature: signatureFor(target) } });
     const result = evaluateWarmCheck({
@@ -211,18 +213,29 @@ async function checkMode(targets: WarmTarget[]): Promise<number> {
         ? { payload: row.payload as unknown as PackCachePayload, builtAt: row.builtAt }
         : null,
     });
-    if (!result.ok) failed += 1;
-    const status = !result.ok
-      ? `fail:${result.reason}`
-      : result.reason === "stale"
-        ? "warn:stale"
-        : "ok";
+    let invalidRule: string | undefined;
+    if (validate && row) {
+      const check = validatePack(row.payload as unknown as PackCachePayload);
+      if (!check.ok) {
+        invalidRule = check.rule;
+        violations += 1;
+        failed += 1;
+      }
+    }
+    if (!result.ok && !invalidRule) failed += 1;
+    const status = invalidRule
+      ? `fail:invalid`
+      : !result.ok
+        ? `fail:${result.reason}`
+        : result.reason === "stale"
+          ? "warn:stale"
+          : "ok";
     console.log(
       warmRowLine({
         presetId: result.presetId,
         locale: target.locale,
         status,
-        reason: result.reason ?? "ok",
+        reason: invalidRule ? `invalid:${invalidRule}` : result.reason ?? "ok",
         // `--check` reads stored rows: nothing was attempted in this process.
         attempts: 0,
         narration: result.narration,
@@ -240,6 +253,7 @@ async function checkMode(targets: WarmTarget[]): Promise<number> {
     );
   }
   console.log(`warm check ${targets.length - failed}/${targets.length} ok`);
+  if (validate) console.log(`warm validate violations=${violations}`);
   return failed > 0 ? 1 : 0;
 }
 
@@ -301,7 +315,7 @@ export const productionDeps: WarmDeps = {
       qlooCalls,
       isPreset: true,
     });
-    return { wrote: result.wrote, grade: result.grade };
+    return { wrote: result.wrote, grade: result.grade, invalidRule: result.invalidRule };
   },
   llm: () => ({ configured: llmConfigured(), disabled: llmDisabled() }),
   geminiCalls: geminiCallCount,
@@ -328,7 +342,7 @@ async function main(): Promise<void> {
   }
 
   if (argv.includes("--check")) {
-    const code = await checkMode(targets);
+    const code = await checkMode(targets, argv.includes("--validate"));
     await prisma.$disconnect();
     process.exit(code);
   }

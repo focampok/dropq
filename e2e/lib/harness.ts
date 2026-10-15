@@ -52,6 +52,18 @@ export class BudgetAbort extends Error {
 }
 
 /**
+ * A preset that is not in the stored pack cache. In the prod profile that is fatal: the
+ * next click would make the deployment run a paid live build, so the suite stops instead
+ * of continuing to generate.
+ */
+export class PresetCacheMissError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PresetCacheMissError";
+  }
+}
+
+/**
  * Counters that abort the run, not just report.
  *
  * Gemini is read from the app's own stream (`done` carries the process-cumulative

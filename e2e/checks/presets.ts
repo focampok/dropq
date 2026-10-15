@@ -21,7 +21,7 @@ import {
   wearTagsExcluded,
 } from "../lib/app";
 import { Acc, type Ctx } from "../lib/ctx";
-import { BudgetAbort, nextForwarded, screenshotBoth } from "../lib/harness";
+import { BudgetAbort, PresetCacheMissError, nextForwarded, screenshotBoth } from "../lib/harness";
 import {
   gotoHome,
   loadPreset,
@@ -105,6 +105,9 @@ export async function runPresetChecks(ctx: Ctx): Promise<void> {
         await onePreset(ctx, accs, preset, locale);
       } catch (error) {
         if (error instanceof BudgetAbort) throw error;
+        // A preset that is not in the stored cache is not this check's business to report
+        // and forget: it has to stop the whole suite before anything is generated.
+        if (error instanceof PresetCacheMissError) throw error;
         const message = error instanceof Error ? error.message : String(error);
         for (const acc of Object.values(accs)) acc.fail(`${preset}/${locale}: ${message}`);
       }
@@ -128,7 +131,13 @@ async function onePreset(ctx: Ctx, accs: Record<string, Acc>, preset: string, lo
     await setLocaleCookie(context, ctx.base, locale);
     const page = await context.newPage();
     await gotoHome(page, ctx.base);
-    const visibleMs = await loadPreset(page, ctx.base, presetLabel(locale, preset), PACK_BUTTON);
+    // Against a deployment every preset load has to be a cache hit: a miss would make the
+    // app build the pack live and spend Qloo and Gemini. `requireCacheHit` turns that into
+    // a fatal abort for the whole suite instead of a slow, expensive surprise.
+    const visibleMs = await loadPreset(page, ctx.base, presetLabel(locale, preset), PACK_BUTTON, {
+      requireCacheHit: ctx.profile === "prod",
+      where: `${preset}/${locale}`,
+    });
     await waitForStreamDone(page);
 
     // Cached note (A1): the app writes a relative "prepared" line for a cache hit.

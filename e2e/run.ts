@@ -15,7 +15,16 @@ import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import type { Browser } from "playwright";
-import { Budget, BudgetAbort, E2E_ROOT, Recorder, launchBrowser, startLocalServer, writeText } from "./lib/harness";
+import {
+  Budget,
+  BudgetAbort,
+  E2E_ROOT,
+  PresetCacheMissError,
+  Recorder,
+  launchBrowser,
+  startLocalServer,
+  writeText,
+} from "./lib/harness";
 import { buildSummary, writeReportHtml, writeSummary, type Summary } from "./lib/report";
 import type { Ctx } from "./lib/ctx";
 import { runPresetChecks } from "./checks/presets";
@@ -225,6 +234,7 @@ async function main(): Promise<void> {
     }
 
     let budgetStopped = false;
+    let cacheMiss: string | null = null;
     const guard = async (label: string, ids: string[], run: () => Promise<void>, costly = false): Promise<void> => {
       const wanted = selected(ids);
       if (wanted.length === 0) return;
@@ -245,6 +255,13 @@ async function main(): Promise<void> {
           for (const id of wanted) skipCheck(recorder, id, label, "budget");
           return;
         }
+        if (error instanceof PresetCacheMissError) {
+          // Fatal on purpose: continuing would click through a cold preset and make the
+          // deployment run a paid live build. Everything not yet reported becomes a FAIL.
+          cacheMiss = error.message;
+          log(`!! ABORTED — ${error.message}`);
+          return;
+        }
         const message = error instanceof Error ? error.message : String(error);
         log(`!! ${label} threw: ${message}`);
         for (const id of wanted) {
@@ -256,21 +273,42 @@ async function main(): Promise<void> {
     };
 
     // Cheap API checks first, then the browser flows, then the quota-spending ones.
+    // `stop` is set by a fatal abort (a preset that is not in the cache) so the remaining
+    // modules are never run: every id they would have reported is failed below instead.
+    const stop = () => cacheMiss !== null;
     await guard("server", API_CHECKS.server!, () => runServerChecks(ctx));
-    await guard("sessions", API_CHECKS.sessions!, () => runSessionChecks(ctx));
-    await guard("limits-api", API_CHECKS["limits-api"]!, () => runLimitApiChecks(ctx));
-    if (profile === "prod") skipCheck(recorder, "G4", "limits-api", "profile");
-    await guard("limits-messages", BROWSER_CHECKS.messages!, () => runLimitMessageChecks(ctx));
-    await guard("presets", BROWSER_CHECKS.presets!, () => runPresetChecks(ctx));
-    await guard("language", BROWSER_CHECKS.language!, () => runLanguageChecks(ctx));
-    await guard("layout", BROWSER_CHECKS.layout!, () => runLayoutChecks(ctx));
-    if (profile === "local") {
+    if (!stop()) await guard("sessions", API_CHECKS.sessions!, () => runSessionChecks(ctx));
+    if (!stop()) await guard("limits-api", API_CHECKS["limits-api"]!, () => runLimitApiChecks(ctx));
+    if (!stop() && profile === "prod") skipCheck(recorder, "G4", "limits-api", "profile");
+    if (!stop()) await guard("limits-messages", BROWSER_CHECKS.messages!, () => runLimitMessageChecks(ctx));
+    if (!stop()) await guard("presets", BROWSER_CHECKS.presets!, () => runPresetChecks(ctx));
+    if (!stop()) await guard("language", BROWSER_CHECKS.language!, () => runLanguageChecks(ctx));
+    if (!stop()) await guard("layout", BROWSER_CHECKS.layout!, () => runLayoutChecks(ctx));
+    if (!stop() && profile === "local") {
       await guard("deepcuts", BROWSER_CHECKS.deepcuts!, () => runDeepCutsChecks(ctx), true);
-      await guard("live", BROWSER_CHECKS.live!, () => runLiveChecks(ctx), true);
-    } else {
+      if (!stop()) await guard("live", BROWSER_CHECKS.live!, () => runLiveChecks(ctx), true);
+    } else if (!stop()) {
       for (const id of [...BROWSER_CHECKS.deepcuts!, ...BROWSER_CHECKS.live!]) skipCheck(recorder, id, "quota-spending", "profile");
     }
-    await guard("a11y", BROWSER_CHECKS.a11y!, () => runA11yChecks(ctx));
+    if (!stop()) await guard("a11y", BROWSER_CHECKS.a11y!, () => runA11yChecks(ctx));
+    if (cacheMiss) {
+      const pending = (selection ? EXPECTED_IDS.filter((id) => selection.has(id)) : EXPECTED_IDS).filter(
+        (id) => !recorder.results.some((result) => result.id === id),
+      );
+      log(`!! ${pending.length} check(s) not run: the suite stopped before generating`);
+      for (const id of pending) {
+        recorder.record({
+          id,
+          name: "aborted",
+          profile,
+          cost: "free",
+          status: "FAIL",
+          ms: 0,
+          screenshots: [],
+          details: [`not run: aborted on a preset cache miss (${cacheMiss})`],
+        });
+      }
+    }
 
     if (profile === "local") await disconnect().catch(() => undefined);
 

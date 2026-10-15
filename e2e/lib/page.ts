@@ -3,6 +3,7 @@
  * rendered pack and cross-read the app's own `/packs/latest` from the same cookie jar.
  */
 import type { BrowserContext, Page } from "playwright";
+import { PresetCacheMissError } from "./harness";
 
 export const DONE = 'li[data-step="done"][data-state="done"]';
 export const READY_MS = 120_000;
@@ -114,12 +115,31 @@ export async function loadPreset(
   base: string,
   presetLabel: string,
   packLabel: RegExp | string,
+  options: { requireCacheHit?: boolean; where?: string } = {},
 ): Promise<number> {
   await gotoHome(page, base);
   await waitForHydrated(page);
   await page.getByRole("button", { name: presetLabel, exact: true }).click();
   const started = Date.now();
+  const packResponse = options.requireCacheHit
+    ? page.waitForResponse(
+        (response) => response.request().method() === "POST" && /\/pack$/.test(new URL(response.url()).pathname),
+        { timeout: READY_MS },
+      )
+    : null;
   await page.getByRole("button", { name: packLabel }).click();
+  if (packResponse) {
+    // A preset that is not in the stored cache would trigger a live build, which spends
+    // Qloo and Gemini against production. The app marks a served row with this header, so
+    // its absence is the signal to stop the whole suite before anything is generated.
+    const response = await packResponse;
+    const cache = response.headers()["x-dropq-cache"];
+    if (cache !== "hit") {
+      throw new PresetCacheMissError(
+        `${options.where ?? presetLabel}: the pack response was not served from the stored cache (X-DropQ-Cache: ${cache ?? "absent"})`,
+      );
+    }
+  }
   await page.waitForURL(/\/pack\?session=/, { timeout: READY_MS });
   await waitForCards(page);
   return Date.now() - started;

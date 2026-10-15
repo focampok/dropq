@@ -31,7 +31,8 @@ import {
   type NarrationGrade,
   type PackCachePayload,
 } from "../src/lib/pack/cache";
-import { validatePack } from "../src/lib/pack/validate";
+import { validateCrossLanguageParity, validatePack } from "../src/lib/pack/validate";
+import { relocalizeCachedPack } from "../src/lib/pipeline/run";
 import {
   LOCALES,
   WARM_MAX_ROUNDS_DEFAULT,
@@ -204,6 +205,7 @@ function signatureFor(target: WarmTarget): string {
 async function checkMode(targets: WarmTarget[], validate: boolean): Promise<number> {
   let failed = 0;
   let violations = 0;
+  const byPreset = new Map<string, { en?: PackCachePayload; es?: PackCachePayload }>();
   for (const target of targets) {
     const row = await prisma.packCache.findUnique({ where: { signature: signatureFor(target) } });
     const result = evaluateWarmCheck({
@@ -215,12 +217,16 @@ async function checkMode(targets: WarmTarget[], validate: boolean): Promise<numb
     });
     let invalidRule: string | undefined;
     if (validate && row) {
-      const check = validatePack(row.payload as unknown as PackCachePayload);
+      const payload = row.payload as unknown as PackCachePayload;
+      const check = validatePack(payload);
       if (!check.ok) {
         invalidRule = check.rule;
         violations += 1;
         failed += 1;
       }
+      const bucket = byPreset.get(target.presetId) ?? {};
+      bucket[target.locale] = payload;
+      byPreset.set(target.presetId, bucket);
     }
     if (!result.ok && !invalidRule) failed += 1;
     const status = invalidRule
@@ -252,7 +258,31 @@ async function checkMode(targets: WarmTarget[], validate: boolean): Promise<numb
       }),
     );
   }
-  console.log(`warm check ${targets.length - failed}/${targets.length} ok`);
+  if (validate) {
+    for (const [presetId, pair] of byPreset) {
+      if (!pair.en || !pair.es) continue;
+      const parity = validateCrossLanguageParity(pair.en, pair.es);
+      if (!parity.ok) {
+        violations += 1;
+        failed += 1;
+        console.log(
+          warmRowLine({
+            presetId,
+            locale: "en",
+            status: "fail:parity",
+            reason: `invalid:${parity.rule}`,
+            attempts: 0,
+            narration: { A: "n/a", B: "n/a" },
+            modelUsed: { A: null, B: null },
+            geminiCalls: 0,
+            qlooCalls: 0,
+            extra: `detail=${parity.detail ?? "n/a"}`,
+          }),
+        );
+      }
+    }
+  }
+  console.log(`warm check ${Math.max(0, targets.length - failed)}/${targets.length} ok`);
   if (validate) console.log(`warm validate violations=${violations}`);
   return failed > 0 ? 1 : 0;
 }
@@ -273,6 +303,10 @@ async function buildOnce(target: WarmTarget): Promise<WarmBuild> {
   const preset = presetById(target.presetId);
   const qlooBefore = observedQlooCalls();
   try {
+    const other: WarmLocale = target.locale === "en" ? "es" : "en";
+    const sibling = await prisma.packCache.findUnique({
+      where: { signature: signatureFor({ presetId: target.presetId, locale: other }) },
+    });
     const session = await prisma.session.create({
       data: {
         city: preset.city,
@@ -283,6 +317,16 @@ async function buildOnce(target: WarmTarget): Promise<WarmBuild> {
         },
       },
     });
+    // Shared cards: the first language of a preset runs Qloo + anchors; the second only
+    // narrates from the sibling row so EN and ES never diverge.
+    if (sibling) {
+      const snap = await relocalizeCachedPack(
+        session.id,
+        sibling.payload as unknown as PackCachePayload,
+        target.locale,
+      );
+      return { ok: true, payload: snap, qlooCalls: Math.max(0, observedQlooCalls() - qlooBefore) };
+    }
     await runPipeline(session.id, () => undefined);
     const snap = await snapshotSessionPacks(session.id);
     if (!snap) {
@@ -309,6 +353,19 @@ export const productionDeps: WarmDeps = {
     return row ? { grade: packNarrationGrade(row.payload as unknown as PackCachePayload) } : null;
   },
   write: async ({ target, payload, qlooCalls }) => {
+    const other: WarmLocale = target.locale === "en" ? "es" : "en";
+    const sibling = await prisma.packCache.findUnique({
+      where: { signature: signatureFor({ presetId: target.presetId, locale: other }) },
+    });
+    if (sibling) {
+      const parity = validateCrossLanguageParity(
+        sibling.payload as unknown as PackCachePayload,
+        payload,
+      );
+      if (!parity.ok) {
+        return { wrote: false, grade: packNarrationGrade(payload), invalidRule: parity.rule };
+      }
+    }
     const result = await writePackCacheIfBetter({
       signature: signatureFor(target),
       payload,

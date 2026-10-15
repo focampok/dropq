@@ -75,6 +75,52 @@ export function packSignature(input: {
   return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
 }
 
+/**
+ * Language-neutral identity for card selection (seeds, city, event, mode, pipeline).
+ * Single-flight and sibling reuse key on this so EN and ES never pick different Bridge
+ * anchors. Per-locale rows still use `packSignature` (narration differs).
+ */
+export function packCardsSignature(input: {
+  entityIds: string[];
+  city: string;
+  eventKind: string;
+  mode?: PackCacheMode;
+  pipelineVersion?: string;
+}): string {
+  const normalized = {
+    pipeline: input.pipelineVersion ?? PIPELINE_VERSION,
+    entityIds: [...input.entityIds].map((id) => id.trim().toUpperCase()).filter(Boolean).sort(),
+    city: input.city.trim().toLowerCase(),
+    eventKind: input.eventKind,
+    mode: input.mode ?? "default",
+  };
+  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+}
+
+export function siblingLocale(locale: string): "en" | "es" {
+  return locale === "es" ? "en" : "es";
+}
+
+/**
+ * Copy another language's cards into a payload for `locale`, clearing narratives so the
+ * caller can paint templates then LLM text. Entity ids and evidence are unchanged.
+ */
+export function cloneCardsForLocale(source: PackCachePayload, locale: "en" | "es"): PackCachePayload {
+  return {
+    city: source.city,
+    eventKind: source.eventKind,
+    locale,
+    seeds: source.seeds.map((seed) => ({ ...seed })),
+    packs: source.packs.map((pack) => ({
+      label: pack.label,
+      axis: pack.axis,
+      narrative: null,
+      coverage: stripCacheMarker(pack.coverage),
+      items: pack.items.map((item) => ({ ...item, evidence: item.evidence })),
+    })),
+  };
+}
+
 function ttlMs(isPreset: boolean): number {
   return (isPreset ? PACK_CACHE_PRESET_TTL_HOURS : PACK_CACHE_TTL_HOURS) * 60 * 60_000;
 }

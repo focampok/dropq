@@ -5,6 +5,12 @@ import { entityTagNames, search } from "@/lib/qloo/client";
 import { cachedEntityTags, cachedInsights, cachedSearch } from "@/lib/qloo/cache";
 import { QlooQuotaError, type QlooInsightHit } from "@/lib/qloo/types";
 import { assemblePack } from "@/lib/pack/assemble";
+import {
+  cloneCardsForLocale,
+  materializeCachedPack,
+  snapshotSessionPacks,
+  type PackCachePayload,
+} from "@/lib/pack/cache";
 import fixture from "@/lib/pack/fixture.json";
 import {
   PINNED_PRESETS,
@@ -1664,4 +1670,106 @@ export async function resolveOnly(
     type: seed.type,
     entityId: seed.entityId,
   }));
+}
+
+function keptAnchorMeta(source: PackCachePayload): {
+  anchors: "llm" | "fallback";
+  anchorSource: AnchorSource;
+  ruleB?: RuleBCoverage;
+} {
+  const planB = source.packs.find((pack) => pack.label === "B");
+  const coverage =
+    planB?.coverage && typeof planB.coverage === "object" && !Array.isArray(planB.coverage)
+      ? (planB.coverage as Record<string, unknown>)
+      : {};
+  const llm = readCoverageLlm(coverage.llm);
+  const ruleB = readRuleB(coverage.ruleB);
+  return {
+    anchors: llm?.anchors ?? "fallback",
+    anchorSource: llm?.anchorSource ?? "rule_b_fallback",
+    ...(ruleB ? { ruleB } : {}),
+  };
+}
+
+function narrativePlansFromPayload(payload: PackCachePayload): NarrativePlanInput[] {
+  const anchors = payload.seeds.map((seed) => ({
+    name: seed.resolvedName?.trim() || seed.rawText,
+  }));
+  return (["A", "B"] as const).map((label) => {
+    const pack = payload.packs.find((row) => row.label === label);
+    const slots: Partial<Record<"watch" | "listen" | "wear" | "do", string>> = {};
+    for (const item of pack?.items ?? []) slots[item.slot] = item.qlooName;
+    return { label, city: payload.city, anchors, slots };
+  });
+}
+
+/**
+ * Reuse another language's cards: materialize them, paint template narration for
+ * `locale`, then swap in LLM text. Never calls Qloo or `chooseBridgeAnchors`.
+ */
+export async function relocalizeCachedPack(
+  sessionId: string,
+  source: PackCachePayload,
+  locale: "en" | "es",
+  emit: (event: Progress) => void = () => undefined,
+): Promise<PackCachePayload> {
+  const cloned = cloneCardsForLocale(source, locale);
+  const planInputs = narrativePlansFromPayload(cloned);
+  const templates = new Map(planInputs.map((plan) => [plan.label, templateFor(plan, locale)]));
+  const kept = keptAnchorMeta(source);
+  const { provider, offReason: statusOff } = llmStatus();
+
+  for (const pack of cloned.packs) {
+    const narrative = templates.get(pack.label)!;
+    pack.narrative = narrative.text;
+    const previous =
+      pack.coverage && typeof pack.coverage === "object" && !Array.isArray(pack.coverage)
+        ? { ...(pack.coverage as Record<string, unknown>) }
+        : {};
+    pack.coverage = {
+      ...previous,
+      llm: llmCoverage({
+        provider,
+        offReason: statusOff,
+        anchors: kept.anchors,
+        anchorSource: kept.anchorSource,
+        narrative,
+        failures: [],
+      }),
+    } as Prisma.JsonValue;
+  }
+
+  const packIds = await materializeCachedPack(sessionId, { payload: cloned, builtAt: new Date() });
+  for (const step of ["resolve_seeds", "insights_hop0", "pick_bridge_anchors", "insights_hop1", "assemble"] as const) {
+    emit({ step, status: "done", ...(step === "assemble" ? { detail: "shared_cards" } : {}) });
+  }
+  emit({ step: "enrich", status: "skipped" });
+  emit({ step: "narrate", status: "active" });
+
+  const narration = await composeNarratives({ locale, plans: planInputs });
+  const narrateOff = offReasonWithQuota(narration.offReason ?? statusOff, narration.failures);
+  const plansToWrite =
+    narration.plans.some((plan) => plan.source === "llm") || narration.failures.length > 0
+      ? narration.plans
+      : [...templates.values()];
+  await writeNarratives(sessionId, plansToWrite, {
+    provider,
+    offReason: narrateOff,
+    anchors: kept.anchors,
+    anchorSource: kept.anchorSource,
+    failures: narration.failures,
+    ...(kept.ruleB ? { ruleB: kept.ruleB } : {}),
+    narrativeTrace: narration.trace,
+  });
+  emit({
+    step: "narrate",
+    status: "done",
+    detail: narration.plans.map((plan) => `${plan.label}:${plan.source}`).join(","),
+    ...(narration.failures.length > 0 ? { llmFallback: narration.failures.join(",") } : {}),
+  });
+  emit({ step: "done", status: "done", packIds, geminiCalls: geminiCallCount() });
+
+  const snap = await snapshotSessionPacks(sessionId);
+  if (!snap) throw new Error("pack_empty");
+  return snap;
 }

@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   beginPackFlight,
+  cloneCardsForLocale,
   narrationGradeReplaces,
+  packCardsSignature,
   packNarrationGrade,
   packSignature,
   resetPackSingleFlight,
+  siblingLocale,
   stampCacheNarration,
   type PackCachePayload,
 } from "@/lib/pack/cache";
@@ -108,6 +111,27 @@ describe("packSignature", () => {
       locale: "es",
     });
     expect(en).not.toBe(es);
+  });
+});
+
+describe("packCardsSignature", () => {
+  it("is identical for en and es and differs from packSignature", () => {
+    const base = { entityIds: ["A"], city: "Houston", eventKind: "tour" as const };
+    const cards = packCardsSignature(base);
+    expect(cards).toBe(packCardsSignature(base));
+    expect(cards).not.toBe(packSignature({ ...base, locale: "en" }));
+    expect(siblingLocale("en")).toBe("es");
+    expect(siblingLocale("es")).toBe("en");
+  });
+
+  it("cloneCardsForLocale keeps entity ids and switches locale", () => {
+    const source = payloadWith("llm", "llm");
+    const cloned = cloneCardsForLocale(source, "es");
+    expect(cloned.locale).toBe("es");
+    expect(cloned.packs[0]!.items.map((item) => item.qlooEntityId)).toEqual(
+      source.packs[0]!.items.map((item) => item.qlooEntityId),
+    );
+    expect(cloned.packs[0]!.narrative).toBeNull();
   });
 });
 

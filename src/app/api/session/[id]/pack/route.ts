@@ -7,18 +7,22 @@ import {
   cachedStreamEvents,
   detectPresetFromPayload,
   materializeCachedPack,
+  packCardsSignature,
   packSignature,
   readPackCache,
+  siblingLocale,
   snapshotSessionPacks,
   writePackCache,
+  writePackCacheIfBetter,
+  type PackCachePayload,
 } from "@/lib/pack/cache";
-import { validatePack } from "@/lib/pack/validate";
+import { validateCrossLanguageParity, validatePack } from "@/lib/pack/validate";
 import { observedQlooCalls, qlooQuota } from "@/lib/qloo/client";
 import { qlooApiKey } from "@/lib/qloo/config";
 import { QlooQuotaError } from "@/lib/qloo/types";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { PINNED_PRESETS } from "@/lib/pipeline/config";
-import { resolveOnly, runPipeline } from "@/lib/pipeline/run";
+import { relocalizeCachedPack, resolveOnly, runPipeline } from "@/lib/pipeline/run";
 import { requireSession } from "@/lib/session/require";
 import { packInputSchema } from "@/lib/session/schema";
 
@@ -40,6 +44,27 @@ const quotaBody = {
   en: "Live data is temporarily limited; try a preset.",
   es: "Los datos en vivo están limitados por ahora; prueba un preset.",
 };
+
+type Built = { payload: PackCachePayload; builtAt: Date };
+
+function streamCached(packIds: string[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const event of cachedStreamEvents(packIds)) {
+        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-store",
+      "X-DropQ-Cache": "hit",
+    },
+  });
+}
 
 export async function POST(request: Request, context: RouteContext) {
   const { id } = await context.params;
@@ -90,19 +115,75 @@ export async function POST(request: Request, context: RouteContext) {
       locale,
       mode: "default",
     });
+    const cardsSig = packCardsSignature({
+      entityIds,
+      city: session.city,
+      eventKind,
+      mode: "default",
+    });
+    const otherLocale = siblingLocale(locale);
+    const siblingSignature = packSignature({
+      entityIds,
+      city: session.city,
+      eventKind,
+      locale: otherLocale,
+      mode: "default",
+    });
 
     const hit = await readPackCache(signature);
     if (hit) {
       const cheap = enforceRateLimit(request, "pack_cheap");
       if (cheap) return cheap;
       const packIds = await materializeCachedPack(id, hit);
+      return streamCached(packIds);
+    }
+
+    // Another language already chose the cards: narrate only (no Qloo, no new anchors).
+    const sibling = await readPackCache(siblingSignature);
+    if (sibling) {
+      const cheap = enforceRateLimit(request, "pack_cheap");
+      if (cheap) return cheap;
       const encoder = new TextEncoder();
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          for (const event of cachedStreamEvents(packIds)) {
+      const stream = new ReadableStream({
+        async start(controller) {
+          const emit = (event: unknown) => {
             controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+          };
+          try {
+            const flight = beginPackFlight(`${cardsSig}:narrate:${locale}`, id, async (): Promise<Built> => {
+              const again = await readPackCache(signature);
+              if (again) return again;
+              const payload = await relocalizeCachedPack(id, sibling.payload, locale, emit);
+              const isPreset = detectPresetFromPayload(payload);
+              if (isPreset) {
+                if (!validatePack(payload).ok) return { payload, builtAt: new Date() };
+                const parity = validateCrossLanguageParity(sibling.payload, payload);
+                if (!parity.ok) return { payload, builtAt: new Date() };
+              }
+              const written = await writePackCacheIfBetter({
+                signature,
+                payload,
+                qlooCalls: 0,
+                isPreset,
+              });
+              return { payload, builtAt: written.builtAt };
+            });
+            if (!flight.owner) {
+              const built = await flight.promise;
+              const packIds = await materializeCachedPack(id, built);
+              for (const event of cachedStreamEvents(packIds)) emit(event);
+            } else {
+              await flight.promise;
+            }
+          } catch (error) {
+            emit({
+              step: "error",
+              status: "error",
+              detail: error instanceof QlooQuotaError ? "QUOTA_LOW" : "failed",
+            });
+          } finally {
+            controller.close();
           }
-          controller.close();
         },
       });
       return new Response(stream, {
@@ -127,7 +208,29 @@ export async function POST(request: Request, context: RouteContext) {
         };
         try {
           const qlooBefore = observedQlooCalls();
-          const flight = beginPackFlight(signature, id, async () => {
+          // Single-flight on the language-neutral cards key so concurrent EN/ES first
+          // builds share one Qloo + anchor selection.
+          const flight = beginPackFlight(cardsSig, id, async (): Promise<Built> => {
+            const own = await readPackCache(signature);
+            if (own) return own;
+            const sib = await readPackCache(siblingSignature);
+            if (sib) {
+              const payload = await relocalizeCachedPack(id, sib.payload, locale, emit);
+              const isPreset = detectPresetFromPayload(payload);
+              if (isPreset && validatePack(payload).ok) {
+                const parity = validateCrossLanguageParity(sib.payload, payload);
+                if (parity.ok) {
+                  const written = await writePackCacheIfBetter({
+                    signature,
+                    payload,
+                    qlooCalls: 0,
+                    isPreset,
+                  });
+                  return { payload, builtAt: written.builtAt };
+                }
+              }
+              return { payload, builtAt: new Date() };
+            }
             markLiveGeneration(session.seeds);
             await runPipeline(id, emit, request.signal);
             const snap = await snapshotSessionPacks(id);
@@ -151,8 +254,25 @@ export async function POST(request: Request, context: RouteContext) {
             await flight.promise;
           } else {
             const built = await flight.promise;
-            const packIds = await materializeCachedPack(id, built);
-            for (const event of cachedStreamEvents(packIds)) emit(event);
+            if (built.payload.locale === locale) {
+              const packIds = await materializeCachedPack(id, built);
+              for (const event of cachedStreamEvents(packIds)) emit(event);
+            } else {
+              // Owner built the other language's cards; narrate ours from them.
+              const payload = await relocalizeCachedPack(id, built.payload, locale, emit);
+              const isPreset = detectPresetFromPayload(payload);
+              if (isPreset && validatePack(payload).ok) {
+                const parity = validateCrossLanguageParity(built.payload, payload);
+                if (parity.ok) {
+                  await writePackCacheIfBetter({
+                    signature,
+                    payload,
+                    qlooCalls: 0,
+                    isPreset,
+                  });
+                }
+              }
+            }
           }
         } catch (error) {
           emit({

@@ -56,6 +56,10 @@ The Bridge's hop-1 request for `listen`, `watch` and `wear` sends `signal.locati
 - **Does:** pick 2–3 Bridge anchors from the closed list; write short narratives with `[[tokens]]` that the server substitutes.
 - **Does not:** invent entities, scores, or places; override Qloo taste; run when the hourly soft cap is hit (template narration + rule B still produce a pack).
 
+### LLM-only vs Qloo (F7)
+
+On the pack page, **Compare with an LLM-only answer** asks a tool-free LLM for one name per slot (watch / listen / wear / do), then resolves each name with Qloo `/search` (≤4 searches). The panel shows **LLM only** and **With Qloo** side by side, with Verified / Not verifiable chips and which suggestions also appear in the real pack. Preset baselines are precomputed by `pnpm warm` and served as cache hits; the comparison never changes the pack.
+
 ## Architecture
 
 ```
@@ -76,9 +80,9 @@ pnpm prisma migrate deploy
 pnpm dev
 ```
 
-Optional: `pnpm warm` prebuilds the three presets in English and Spanish into the pack cache (needs Qloo; the LLM is optional and upgrades the narration later). `pnpm warm --check` reports what is stored. `pnpm verify:local` exercises presets over HTTP against a running app.
+Optional: `pnpm warm` prebuilds the three presets in English and Spanish into the pack cache (needs Qloo; the LLM is optional and upgrades the narration later). After each pack row is valid it also builds the LLM-only baseline comparison for that preset×language. `pnpm warm --check` reports what is stored (including a `baseline=` column); `--validate` fails when a pack or baseline is missing or malformed. `pnpm verify:local` exercises presets over HTTP against a running app.
 
-Each row ends in exactly one of `cached` (a new LLM row was written), `kept` (the stored row is at least as good), `template` (written with the template narration, nothing better available) or `failed` (the build itself could not run), and the line always carries `reason=` and `attempts=`. An LLM outage is not a `failed` row: the row is still written with the template and the reason names the cause (`quota_daily`, `quota_minute`, `timeout`, `llm_error`), so a warm run never leaves a language missing because the model was out of quota.
+Each row ends in exactly one of `cached` (a new LLM row was written), `kept` (the stored row is at least as good), `template` (written with the template narration, nothing better available) or `failed` (the build itself could not run), and the line always carries `reason=` and `attempts=` plus `baseline=cached|kept|failed` (with `reason=`). An LLM outage is not a `failed` pack row: the row is still written with the template and the reason names the cause (`quota_daily`, `quota_minute`, `timeout`, `llm_error`), so a warm run never leaves a language missing because the model was out of quota. A baseline failure never deletes or downgrades a valid pack.
 
 - `pnpm warm --only <preset>[:en|:es]` (repeatable) limits the matrix to those rows.
 - `pnpm warm --until-ok` repeats only the rows that are not yet `llm`, up to `--max-rounds` (default 4) times and never sooner than `--pause-s` (default 300, minimum 60). It exits 0 as soon as every selected row is `llm`; it stops early, non-zero, when every Gemini model is out of its daily quota (naming the reset time in Guatemala time) or when the Qloo remaining falls under the reserve.
@@ -117,11 +121,11 @@ The pack-cache signature includes `PIPELINE_VERSION` (`src/lib/pipeline/config.t
 ## End-to-end tests
 
 `pnpm e2e` drives the built app in a real Chromium and runs the whole checklist — the three
-cached presets, the evidence panel, the live LLM path, Deep cuts, sessions, limits, language,
-layout and the server surface — printing `PASS`, `FAIL` or `SKIP: <reason>` per check and
-writing `docs/e2e/report.html`, `docs/e2e/summary.json`, `docs/e2e/run.log` and the
-screenshots (all under the git-ignored `docs/`). The process exits non-zero when any check
-fails; a SKIP is never a pass.
+cached presets, the evidence panel, the LLM-only vs Qloo baseline comparison (F7), the live
+LLM path, Deep cuts, sessions, limits, language, layout and the server surface — printing
+`PASS`, `FAIL` or `SKIP: <reason>` per check and writing `docs/e2e/report.html`,
+`docs/e2e/summary.json`, `docs/e2e/run.log` and the screenshots (all under the git-ignored
+`docs/`). The process exits non-zero when any check fails; a SKIP is never a pass.
 
 - **local** (default): builds if `.next` is missing, starts `next start` on port 3311 with
   the normal `.env`, runs every check (including the three custom live generations that

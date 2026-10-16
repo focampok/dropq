@@ -33,10 +33,34 @@ export async function runA11yChecks(ctx: Ctx): Promise<void> {
         await setLocaleCookie(context, ctx.base, locale);
         const page = await context.newPage();
         await gotoHome(page, ctx.base);
-        await loadPreset(page, ctx.base, presetLabel(locale, "roots-gt-la"), /Pack the night|Armar la noche/);
+        await loadPreset(page, ctx.base, presetLabel(locale, "roots-gt-la"), /Pack the night|Armar la noche/, {
+          requireCacheHit: ctx.profile === "prod",
+          where: `K1 ${where}`,
+        });
         await waitForStreamDone(page);
+        // Wait for the settled pack signal before axe — mobile viewports previously
+        // timed out waiting on a selector while the stream was still painting.
+        await page.waitForSelector('li[data-step="done"][data-state="done"]', {
+          state: "attached",
+          timeout: 30_000,
+        });
         await scrollThrough(page);
-        const results = await new AxeBuilder({ page }).analyze();
+        let results: Awaited<ReturnType<InstanceType<typeof AxeBuilder>["analyze"]>> | null = null;
+        let lastError: string | null = null;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            results = await new AxeBuilder({ page }).analyze();
+            lastError = null;
+            break;
+          } catch (error) {
+            lastError = error instanceof Error ? error.message.split("\n")[0]! : String(error);
+            await page.waitForTimeout(500);
+          }
+        }
+        if (!results) {
+          acc.note(`${where}: axe run failed (${lastError ?? "unknown"})`);
+          continue;
+        }
         const serious = results.violations.filter(
           (violation) => violation.impact === "serious" || violation.impact === "critical",
         );
@@ -47,13 +71,10 @@ export async function runA11yChecks(ctx: Ctx): Promise<void> {
               : ""
           }`,
         );
-        // Name what is left, so a passing check still shows the minor findings.
         for (const violation of results.violations) {
           if (serious.includes(violation)) continue;
           acc.note(`${where}: ${violation.impact ?? "unknown"} ${violation.id} x${violation.nodes.length}`);
         }
-        // Name the failing nodes so a regression points at the element, not just
-        // at the rule. Selectors and measured ratios only: no page text.
         for (const violation of serious) {
           for (const node of violation.nodes.slice(0, NODE_REPORT_LIMIT)) {
             const ratio = node.any[0]?.data?.contrastRatio ?? null;

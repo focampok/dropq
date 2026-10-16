@@ -59,6 +59,14 @@ describe("rate limits", () => {
     expect(enforceRateLimit(request("10.0.0.9"), "pack_cheap")?.status).toBe(429);
   });
 
+  it("limits baseline live builds to 3 per minute per IP", () => {
+    for (let i = 0; i < 3; i++) {
+      expect(enforceRateLimit(request("10.0.0.7"), "baseline_live")).toBeNull();
+    }
+    expect(enforceRateLimit(request("10.0.0.7"), "baseline_live")?.status).toBe(429);
+    expect(enforceRateLimit(request("10.0.0.8"), "baseline_live")).toBeNull();
+  });
+
   it("enforces the live generation soft day cap", () => {
     for (let i = 0; i < LIVE_GENERATIONS_PER_DAY; i++) noteLiveGeneration();
     expect(liveGenerationAllowed()).toBe(false);

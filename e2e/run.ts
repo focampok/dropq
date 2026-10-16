@@ -36,6 +36,7 @@ import { runLayoutChecks } from "./checks/layout";
 import { runDeepCutsChecks } from "./checks/deepcuts";
 import { runLiveChecks } from "./checks/live";
 import { runA11yChecks } from "./checks/a11y";
+import { runBaselineChecks } from "./checks/baseline";
 
 const BROWSER_CHECKS: Record<string, string[]> = {
   presets: ["A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3", "B4", "B5", "B6"],
@@ -45,6 +46,7 @@ const BROWSER_CHECKS: Record<string, string[]> = {
   deepcuts: ["E1", "E2"],
   live: ["C1", "C2", "C3", "D1"],
   a11y: ["K1"],
+  baseline: ["F7-1", "F7-2", "F7-3", "F7-4"],
 };
 
 /** Checks that run over plain HTTP, no browser needed. */
@@ -300,6 +302,12 @@ async function main(): Promise<void> {
       for (const id of [...BROWSER_CHECKS.deepcuts!, ...BROWSER_CHECKS.live!]) skipCheck(recorder, id, "quota-spending", "profile");
     }
     if (!stop()) await guard("a11y", BROWSER_CHECKS.a11y!, () => runA11yChecks(ctx));
+    // F7 after pack loads / a11y: preset baseline hits share the cheap bucket with A/B/H/I/K.
+    if (!stop() && profile === "prod") {
+      log("prod: pausing 65s for the per-IP cheap window before baseline");
+      await new Promise((resolve) => setTimeout(resolve, 65_000));
+    }
+    if (!stop()) await guard("baseline", BROWSER_CHECKS.baseline!, () => runBaselineChecks(ctx));
     if (profile === "prod") {
       if (!stop()) await guard("limits-messages", BROWSER_CHECKS.messages!, () => runLimitMessageChecks(ctx));
       if (!stop()) {

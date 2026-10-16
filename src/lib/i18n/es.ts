@@ -114,6 +114,7 @@ export const es = {
     baselineNotVerifiable: "No verificable",
     baselineAlsoInPack: "También en el pack de Qloo",
     baselineAiBadge: "IA",
+    openBrief: "Abrir brief",
     steps: {
       resolve_seeds: "Resolver anclas",
       insights_hop0: "Insights, salto 0",
@@ -130,5 +131,28 @@ export const es = {
       low: "Baja",
       unverified: "Sin verificar",
     },
+  },
+  brief: {
+    title: "Brief de DropQ",
+    openPrint: "Imprimir / Guardar como PDF",
+    privacyNote:
+      "Construido a partir de anclas culturales públicas y afinidades a nivel de grupo — no a partir de datos personales.",
+    anchorsHeading: "Anclas",
+    unverified: "sin verificar",
+    planRoots: "Plan A — Raíces",
+    planBridge: "Plan B — Puente",
+    howToReadHeading: "Cómo leer los dos planes",
+    howToRead:
+      "Raíces se mantiene cerca de lo que la audiencia ya ama. Puente da un salto hacia la ciudad de destino, para que la noche se sienta familiar y aún nueva.",
+    baselineHeading: "Comparación solo con LLM",
+    evidenceHeading: "Por qué encaja",
+    narrationTemplate: "Narración de plantilla",
+    poweredBy: "Con datos de gusto de Qloo",
+    license: "DropQ tiene licencia MIT.",
+    generated: "Generado {when}",
+  },
+  footer: {
+    license: "Licencia MIT",
+    source: "Repositorio fuente",
   },
 } satisfies Dictionary;

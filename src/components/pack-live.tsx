@@ -24,6 +24,7 @@ type Latest = {
   eventKind: "tour" | "con" | "comunidad" | null;
   anchors: { rawText: string; resolvedName: string | null; type: string; entityId: string | null }[];
   plans: {
+    id: string;
     label: "A" | "B";
     axis: "root" | "bridge";
     narrative: string | null;
@@ -61,6 +62,7 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
   const [bridgeMode, setBridgeMode] = useState<"default" | "deep_cuts">("default");
   const [bridgeBusy, setBridgeBusy] = useState(false);
   const [cacheNote, setCacheNote] = useState<{ label: string; exact: string } | null>(null);
+  const [briefPackId, setBriefPackId] = useState<string | null>(null);
 
   // Applies one snapshot of the stored packs. It runs once at assemble, when only the
   // template narrative exists, and again at narrate, when the LLM text replaces it.
@@ -77,6 +79,7 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
       });
       setAiNarrative(aiFlags(body));
       setPack(toPack(sessionId, body));
+      setBriefPackId(body.plans.find((plan) => plan.label === "A")?.id ?? body.plans[0]?.id ?? null);
       setBridgeMode(modeOf(body));
       const cache = body.plans[0]?.coverage?.cache;
       if (cache?.hit && cache.builtAt) {
@@ -250,6 +253,7 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
       locale={locale}
       pack={pack}
       sessionId={sessionId}
+      briefPackId={briefPackId}
       steps={steps}
       anchors={anchors}
       narratives={narratives}

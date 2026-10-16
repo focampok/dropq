@@ -33,3 +33,60 @@ body {
   white-space: nowrap;
   border: 0;
 }
+
+/* Print-first brief: A4/Letter, light surface, no app chrome. */
+@media print {
+  @page {
+    size: auto;
+    margin: 18mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  .brief-page {
+    background: #ffffff !important;
+    padding: 0 !important;
+  }
+
+  .brief-doc {
+    max-width: none !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-size: 10.5pt;
+    line-height: 1.35;
+  }
+
+  .brief-chrome,
+  .print\:hidden,
+  header:not(.brief-print-header),
+  [data-site-footer],
+  nav {
+    display: none !important;
+  }
+
+  .brief-print-header {
+    display: block !important;
+  }
+
+  .brief-section,
+  .brief-slot,
+  tr.brief-slot {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  h1,
+  h2 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  a[href]::after {
+    content: none;
+  }
+}

@@ -4,7 +4,14 @@ import { useRouter } from "next/navigation";
 import { useHydrated } from "@/components/hydration";
 import { getDictionary, type Locale } from "@/lib/i18n";
 
-export function LanguageToggle({ locale }: { locale: Locale }) {
+export function LanguageToggle({
+  locale,
+  tone = "stage",
+}: {
+  locale: Locale;
+  /** `sheet` for light surfaces (brief); `stage` for the dark app chrome. */
+  tone?: "stage" | "sheet";
+}) {
   const router = useRouter();
   const dictionary = getDictionary(locale);
   const hydrated = useHydrated();
@@ -15,6 +22,10 @@ export function LanguageToggle({ locale }: { locale: Locale }) {
     document.cookie = `dropq_lang=${next}; Path=/; SameSite=Lax; Max-Age=31536000${secure}`;
     router.refresh();
   }
+
+  const muted = tone === "sheet" ? "text-ink/80" : "text-paper/50";
+  const active = tone === "sheet" ? "text-ink font-medium" : "text-paper";
+  const hover = tone === "sheet" ? "hover:text-ink" : "hover:text-paper";
 
   return (
     <div
@@ -27,8 +38,9 @@ export function LanguageToggle({ locale }: { locale: Locale }) {
         onClick={() => choose("en")}
         label={dictionary.language.en}
         disabled={!hydrated}
+        className={pressedClass(locale === "en", active, muted, hover)}
       />
-      <span aria-hidden="true" className="px-1 text-paper/50">
+      <span aria-hidden="true" className={`px-1 ${muted}`}>
         |
       </span>
       <LangButton
@@ -36,9 +48,14 @@ export function LanguageToggle({ locale }: { locale: Locale }) {
         onClick={() => choose("es")}
         label={dictionary.language.es}
         disabled={!hydrated}
+        className={pressedClass(locale === "es", active, muted, hover)}
       />
     </div>
   );
+}
+
+function pressedClass(pressed: boolean, active: string, muted: string, hover: string): string {
+  return pressed ? active : `${muted} ${hover}`;
 }
 
 function LangButton({
@@ -46,11 +63,13 @@ function LangButton({
   onClick,
   label,
   disabled,
+  className,
 }: {
   pressed: boolean;
   onClick: () => void;
   label: string;
   disabled: boolean;
+  className: string;
 }) {
   return (
     <button
@@ -58,9 +77,7 @@ function LangButton({
       aria-pressed={pressed}
       onClick={onClick}
       disabled={disabled}
-      className={`rounded px-1.5 py-0.5 tracking-wide focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stamp disabled:pointer-events-none disabled:opacity-50 ${
-        pressed ? "text-paper" : "text-paper/50 hover:text-paper"
-      }`}
+      className={`rounded px-1.5 py-0.5 tracking-wide focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stamp disabled:pointer-events-none disabled:opacity-50 ${className}`}
     >
       {label}
     </button>

@@ -100,6 +100,7 @@ export type Dictionary = {
     baselineNotVerifiable: string;
     baselineAlsoInPack: string;
     baselineAiBadge: string;
+    openBrief: string;
     steps: Record<StepId, string>;
     confidenceValue: {
       high: string;
@@ -107,5 +108,26 @@ export type Dictionary = {
       low: string;
       unverified: string;
     };
+  };
+  brief: {
+    title: string;
+    openPrint: string;
+    privacyNote: string;
+    anchorsHeading: string;
+    unverified: string;
+    planRoots: string;
+    planBridge: string;
+    howToReadHeading: string;
+    howToRead: string;
+    baselineHeading: string;
+    evidenceHeading: string;
+    narrationTemplate: string;
+    poweredBy: string;
+    license: string;
+    generated: string;
+  };
+  footer: {
+    license: string;
+    source: string;
   };
 };

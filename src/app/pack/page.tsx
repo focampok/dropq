@@ -1,4 +1,5 @@
 import { PackLive } from "@/components/pack-live";
+import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { readLocale } from "@/lib/i18n/locale";
 
@@ -15,6 +16,7 @@ export default async function PackPage({
       <main>
         <PackLive locale={locale} sessionId={params.session ?? ""} />
       </main>
+      <SiteFooter locale={locale} />
     </>
   );
 }

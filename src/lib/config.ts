@@ -15,6 +15,12 @@ function boolEnv(name: string): boolean {
   return raw === "1" || raw === "true";
 }
 
+/**
+ * Optional public repository URL for the footer license link.
+ * Set `NEXT_PUBLIC_REPOSITORY_URL` when a link should appear; never hard-code a host here.
+ */
+export const REPOSITORY_URL = (process.env.NEXT_PUBLIC_REPOSITORY_URL ?? "").trim();
+
 /** Block all live Qloo calls below this remaining monthly count. */
 export const QLOO_HARD_RESERVE = 800;
 

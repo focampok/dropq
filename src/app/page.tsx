@@ -1,4 +1,5 @@
 import { OnboardingForm } from "@/components/onboarding-form";
+import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getDictionary } from "@/lib/i18n";
 import { readLocale } from "@/lib/i18n/locale";
@@ -22,6 +23,7 @@ export default async function HomePage() {
           <OnboardingForm locale={locale} />
         </div>
       </main>
+      <SiteFooter locale={locale} />
     </>
   );
 }

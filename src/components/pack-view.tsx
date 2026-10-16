@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { BookOpen, Headphones, Landmark, Shirt } from "lucide-react";
 import { BaselineCompare } from "@/components/baseline-compare";
+import { BriefOpenLink } from "@/components/brief-open-link";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { getDictionary, type Locale } from "@/lib/i18n";
@@ -26,6 +27,7 @@ export function PackView({
   locale,
   pack,
   sessionId = "",
+  briefPackId = null,
   steps,
   anchors,
   narratives,
@@ -40,6 +42,7 @@ export function PackView({
   locale: Locale;
   pack: AssembledPack | null;
   sessionId?: string;
+  briefPackId?: string | null;
   steps?: Partial<Record<StepId, "pending" | "active" | "done" | "skipped" | "error">>;
   anchors?: { rawText: string; resolvedName: string | null; type: string }[];
   narratives?: { A?: string | null; B?: string | null };
@@ -178,6 +181,7 @@ export function PackView({
       ) : null}
 
       {sessionId ? <BaselineCompare locale={locale} sessionId={sessionId} pack={pack} /> : null}
+      {sessionId ? <BriefOpenLink locale={locale} packId={briefPackId} /> : null}
     </div>
   );
 }

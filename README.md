@@ -2,23 +2,24 @@
 
 DropQ packs a night for an audience and a city the way a promoter would. Name a few public cultural anchors, a destination, and an event kind; DropQ returns two plans of four Qloo-backed cards. Taste comes from Qloo; the LLM only picks Bridge anchors from a closed list and narrates with tokens.
 
-**Live demo:** TBD
+**Live demo:** `<DEMO_URL>` (or see the Devpost page). Devpost paste text: [`docs/SUBMISSION.md`](docs/SUBMISSION.md).
 
-## Plans and slots
+## Features
 
-- **Plan A (Roots)** stays close to the audience anchors.
-- **Plan B (Bridge)** reaches toward the destination city.
-- Each plan has four slots: **watch** (TV shows), **listen**, **wear**, and **do** (no lodging).
-- Every card carries a Qloo `entityId`. Deep cuts toggles a popularity filter on Bridge only and is idempotent.
+- **Plan A (Roots)** / **Plan B (Bridge)** — four slots each: **watch**, **listen**, **wear**, **do**. Every card has a Qloo `entityId`.
+- **Deep cuts** — popularity filter on Bridge only; idempotent.
+- **Why Qloo** — stored shared tags / city-choice evidence, visually distinct from AI-written narration.
+- **EN/ES** — language toggle; cards stay identical across languages.
+- **LLM-only comparison (F7)** — tool-free LLM suggestions verified against Qloo search; preset baselines warmed into cache.
+- **Printable brief (S1)** — `Open brief` → `/packs/:id/brief` (and `GET /api/packs/:id/brief`). Print / Save as PDF via `window.print()`; presets public, custom packs session-owner only. Pure render of stored data (no Qloo or Gemini calls).
 
 ## How Qloo is used
 
 | Call | Role |
 | --- | --- |
-| Search | Resolve seed text to entities (cached). |
-| Entities (`/entities?entity_ids=`) | The seeds' **reference tags** (cached 14 days). |
-| Insights + explainability | Fill slots; explainability is stored when present. |
-| Analysis | Supporting signals where the pipeline uses them. |
+| Search (`/search`) | Resolve seed text to entities (cached); also verifies LLM-only names in F7. |
+| Entities (`/entities?entity_ids=`) | The seeds' **reference tags** (cached). |
+| Insights (`/v2/insights`) | Fill slots; optional `signal.location.query`, `filter.exclude.entities`; explainability stored when present. |
 
 Bridge anchors are chosen from a **closed list** ranked by shared tags (rule B); the LLM may only re-order that list. Measured limits we work within: about **5 requests/second**, **10 000 requests/month**, no reliable per-item affinity score, and many places without images.
 
@@ -63,9 +64,17 @@ On the pack page, **Compare with an LLM-only answer** asks a tool-free LLM for o
 ## Architecture
 
 ```
-browser → Next.js API → Postgres (session, packs, caches)
-                     ↘ Qloo (search / tags / insights)
-                     ↘ Gemini (optional anchors + narration)
+browser ──► Next.js (App Router)
+              │
+              ├── /api/session…/pack     live / cached pack build
+              ├── /api/packs/:id/brief   JSON brief (stored rows only)
+              ├── /packs/:id/brief       printable brief page
+              │
+              ▼
+           Postgres  (session, packs, PackCache, BaselineRun, Qloo caches)
+              │
+              ├──► Qloo   /search · /entities · /v2/insights
+              └──► Gemini (optional Bridge pick + narration; template fallback)
 ```
 
 In-memory rate limits and soft caps assume a **single app instance**.
@@ -80,7 +89,7 @@ pnpm prisma migrate deploy
 pnpm dev
 ```
 
-Optional: `pnpm warm` prebuilds the three presets in English and Spanish into the pack cache (needs Qloo; the LLM is optional and upgrades the narration later). After each pack row is valid it also builds the LLM-only baseline comparison for that preset×language. `pnpm warm --check` reports what is stored (including a `baseline=` column); `--validate` fails when a pack or baseline is missing or malformed. `pnpm verify:local` exercises presets over HTTP against a running app.
+Optional: `pnpm warm` prebuilds the three presets in English and Spanish into the pack cache (needs Qloo; the LLM is optional and upgrades the narration later). After each pack row is valid it also builds the LLM-only baseline comparison for that preset×language. `pnpm warm --check` reports what is stored (including a `baseline=` column); `--validate` fails when a pack or baseline is missing or malformed. `pnpm warm --check --validate` is the read-only gate used before share (expects 6/6 packs and 6/6 baselines, 0 violations, parity ok). Against a non-local database, pass `--confirm-remote` (prints only `remote`, never the host). `pnpm verify:local` exercises presets over HTTP against a running app.
 
 Each row ends in exactly one of `cached` (a new LLM row was written), `kept` (the stored row is at least as good), `template` (written with the template narration, nothing better available) or `failed` (the build itself could not run), and the line always carries `reason=` and `attempts=` plus `baseline=cached|kept|failed` (with `reason=`). An LLM outage is not a `failed` pack row: the row is still written with the template and the reason names the cause (`quota_daily`, `quota_minute`, `timeout`, `llm_error`), so a warm run never leaves a language missing because the model was out of quota. A baseline failure never deletes or downgrades a valid pack.
 
@@ -117,13 +126,15 @@ The pack-cache signature includes `PIPELINE_VERSION` (`src/lib/pipeline/config.t
 | `PRESET_CACHE_TTL_HOURS` | Preset freshness window for warm/check (default 72; prod tip 720) |
 | `DROPQ_LLM_BUDGET` | Per-process model-call cap (default uncapped) |
 | `LOG_IP_PROBE` | `1` logs a five-request client-IP diagnostic (default off) |
+| `NEXT_PUBLIC_REPOSITORY_URL` | Optional public repo URL for the MIT footer link (no hard-coded host in code) |
 
 ## End-to-end tests
 
 `pnpm e2e` drives the built app in a real Chromium and runs the whole checklist — the three
-cached presets, the evidence panel, the LLM-only vs Qloo baseline comparison (F7), the live
-LLM path, Deep cuts, sessions, limits, language, layout and the server surface — printing
-`PASS`, `FAIL` or `SKIP: <reason>` per check and writing `docs/e2e/report.html`,
+cached presets, the evidence panel, the LLM-only vs Qloo baseline comparison (F7), the
+printable brief (S1), the live LLM path, Deep cuts, sessions, limits, language, layout and
+the server surface — printing `PASS`, `FAIL` or `SKIP: <reason>` per check and writing
+`docs/e2e/report.html`,
 `docs/e2e/summary.json`, `docs/e2e/run.log` and the screenshots (all under the git-ignored
 `docs/`). The process exits non-zero when any check fails; a SKIP is never a pass.
 
@@ -317,13 +328,20 @@ E2E_BASE_URL=https://<host> pnpm e2e -- --profile prod
 - `LOG_IP_PROBE` is off.
 - The Postgres TCP proxy is removed.
 
+## Judge quick path
+
+1. Open `<DEMO_URL>` (or the Devpost demo link) and click a preset — pack should load from cache.
+2. Toggle **EN/ES**, turn **Deep cuts** on/off, open **Why Qloo**, then **Compare with an LLM-only answer**.
+3. Click **Open brief**, switch language on the brief page, then **Print / Save as PDF**.
+
 ## Limitations
 
 - Free-tier Qloo and Gemini quotas; the app refuses custom live packs when the monthly reserve or daily soft cap is hit (presets and cached packs keep working).
 - Rate limits and soft caps are **in memory** for one instance.
 - The `do` slot's lodging filter reads only the first eight tags of a place, because its keywords are substrings ("Innovation" and "Dinner" both contain "inn"). The pipeline's own count and the final check share that window.
 - No Content-Security-Policy yet (Next inline scripts need nonces).
+- Cultural coverage and place imagery vary by city; unverified items are labeled; affinities are group-level, not personal predictions.
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See `LICENSE`. The app footer shows the MIT license (EN/ES); set `NEXT_PUBLIC_REPOSITORY_URL` for a source link.

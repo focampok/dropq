@@ -48,6 +48,7 @@ export type LatestPlanItem = {
 };
 
 export type LatestPlan = {
+  id?: string;
   label: "A" | "B";
   axis: "root" | "bridge";
   narrative: string | null;

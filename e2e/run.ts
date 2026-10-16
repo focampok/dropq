@@ -37,6 +37,7 @@ import { runDeepCutsChecks } from "./checks/deepcuts";
 import { runLiveChecks } from "./checks/live";
 import { runA11yChecks } from "./checks/a11y";
 import { runBaselineChecks } from "./checks/baseline";
+import { runBriefChecks } from "./checks/brief";
 
 const BROWSER_CHECKS: Record<string, string[]> = {
   presets: ["A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3", "B4", "B5", "B6"],
@@ -47,6 +48,7 @@ const BROWSER_CHECKS: Record<string, string[]> = {
   live: ["C1", "C2", "C3", "D1"],
   a11y: ["K1"],
   baseline: ["F7-1", "F7-2", "F7-3", "F7-4"],
+  brief: ["S1-1", "S1-2", "S1-3", "S1-4", "S1-5"],
 };
 
 /** Checks that run over plain HTTP, no browser needed. */
@@ -308,6 +310,11 @@ async function main(): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, 65_000));
     }
     if (!stop()) await guard("baseline", BROWSER_CHECKS.baseline!, () => runBaselineChecks(ctx));
+    if (!stop() && profile === "prod") {
+      log("prod: pausing 65s for the per-IP cheap window before brief");
+      await new Promise((resolve) => setTimeout(resolve, 65_000));
+    }
+    if (!stop()) await guard("brief", BROWSER_CHECKS.brief!, () => runBriefChecks(ctx));
     if (profile === "prod") {
       if (!stop()) await guard("limits-messages", BROWSER_CHECKS.messages!, () => runLimitMessageChecks(ctx));
       if (!stop()) {

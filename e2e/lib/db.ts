@@ -38,3 +38,99 @@ export async function disconnect(): Promise<void> {
   await client?.$disconnect();
   client = null;
 }
+
+/** Local-only fixture: a custom (non-preset) session with two packs, no Qloo spend. */
+export async function createCustomBriefFixture(): Promise<{
+  sessionId: string;
+  packId: string;
+  cookieValue: string;
+}> {
+  const { sealSessionId } = await import("../../src/lib/session/cookie");
+  const db = prisma();
+  const session = await db.session.create({
+    data: {
+      locale: "en",
+      city: "Houston",
+      eventKind: "tour",
+      seeds: {
+        create: [
+          {
+            rawText: "UniqueAnchorAlpha",
+            source: "text",
+            domain: "artist",
+            resolvedName: "UniqueAnchorAlpha",
+            resolvedEntityId: "custom-a",
+          },
+          {
+            rawText: "UniqueAnchorBeta",
+            source: "text",
+            domain: "brand",
+            resolvedName: "UniqueAnchorBeta",
+            resolvedEntityId: "custom-b",
+          },
+          {
+            rawText: "UniqueAnchorGamma",
+            source: "text",
+            domain: "artist",
+            resolvedName: "UniqueAnchorGamma",
+            resolvedEntityId: "custom-c",
+          },
+        ],
+      },
+      packs: {
+        create: [
+          {
+            label: "A",
+            axis: "root",
+            status: "ready",
+            narrative: "Custom roots.",
+            coverage: { notes: { en: "", es: "" }, llm: { narrative: "template", anchors: "fallback" } },
+            items: {
+              create: (["watch", "listen", "wear", "do"] as const).map((slot, position) => ({
+                slot,
+                position,
+                hop: 0,
+                qlooEntityId: `custom-${slot}-a`,
+                qlooName: `Custom ${slot} A`,
+                qlooType: "urn:entity:artist",
+                explain: "Custom explain",
+                confidence: "medium",
+                provenance: "qloo",
+                evidence: { sharedTags: ["Custom"] },
+              })),
+            },
+          },
+          {
+            label: "B",
+            axis: "bridge",
+            status: "ready",
+            narrative: "Custom bridge.",
+            coverage: { notes: { en: "", es: "" }, llm: { narrative: "template", anchors: "fallback" } },
+            items: {
+              create: (["watch", "listen", "wear", "do"] as const).map((slot, position) => ({
+                slot,
+                position,
+                hop: 1,
+                qlooEntityId: `custom-${slot}-b`,
+                qlooName: `Custom ${slot} B`,
+                qlooType: "urn:entity:artist",
+                explain: "Custom explain",
+                confidence: "medium",
+                provenance: "qloo",
+                evidence: { sharedTags: ["Custom"] },
+              })),
+            },
+          },
+        ],
+      },
+    },
+    include: { packs: true },
+  });
+  const packId = session.packs.find((pack) => pack.label === "A")?.id ?? session.packs[0]!.id;
+  const cookieValue = await sealSessionId(session.id);
+  return { sessionId: session.id, packId, cookieValue };
+}
+
+export async function deleteSessionCascade(sessionId: string): Promise<void> {
+  await prisma().session.delete({ where: { id: sessionId } }).catch(() => undefined);
+}

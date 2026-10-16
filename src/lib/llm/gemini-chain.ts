@@ -605,10 +605,11 @@ export class GeminiChain {
         const aborted = controller.signal.aborted;
         const pastDeadline = this.now() >= deadlineAt;
         if (aborted && pastDeadline) return fail(new GeminiDeadlineError(error));
-        // Per-attempt cap: demote the slow model and leave room for the next one.
+        // Per-attempt cap: try the next model once. Do not demote on a cap abort (that
+        // multiplied calls across builds) and never retry the same model in this generate.
         if (aborted && !pastDeadline) {
-          this.demote(modelId);
-          this.modeloPreferidoIdx = this.nextNonDemoted(idx) ?? nextLive(modelos.length, idx, descartados);
+          descartados.add(idx);
+          this.modeloPreferidoIdx = nextLive(modelos.length, idx, descartados);
           continue;
         }
         if (thinking && isThinkingRejection(error)) {

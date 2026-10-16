@@ -371,7 +371,7 @@ describe("gemini fallback loop", () => {
     expect(isTransient(error)).toBe(false);
   });
 
-  it("abandons a hanging principal at the per-attempt cap and lets the next model answer", async () => {
+  it("abandons a hanging principal at the per-attempt cap and lets the next model answer without demoting", async () => {
     vi.useFakeTimers();
     const chain = new GeminiChain(config(["principal", "fallback-a"]), {
       now: () => Date.now(),
@@ -396,9 +396,118 @@ describe("gemini fallback loop", () => {
       { attemptCapMs: 3_000 },
     );
     await vi.advanceTimersByTimeAsync(3_000);
-    await expect(pending).resolves.toMatchObject({ value: "ok", trace: { modelUsed: "fallback-a" } });
+    await expect(pending).resolves.toMatchObject({ value: "ok", trace: { modelUsed: "fallback-a", calls: 2 } });
     expect(seen).toEqual(["principal", "fallback-a"]);
-    expect(chain.isDemoted("principal")).toBe(true);
+    // Cap timeout must not soft-demote; that used to inflate later builds.
+    expect(chain.isDemoted("principal")).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("never retries the same model inside one generate after a per-attempt cap abort", async () => {
+    vi.useFakeTimers();
+    const chain = new GeminiChain(config(["principal", "fallback-a", "fallback-b"]), {
+      now: () => Date.now(),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    });
+    const seen: string[] = [];
+    const pending = chain.generate(
+      12_000,
+      ({ modelId, abortSignal }: ChainCall) => {
+        seen.push(modelId);
+        if (modelId !== "fallback-b") {
+          return new Promise((_, reject) => {
+            abortSignal.addEventListener("abort", () => {
+              const error = new Error("This operation was aborted");
+              error.name = "AbortError";
+              reject(error);
+            });
+          });
+        }
+        return Promise.resolve("ok");
+      },
+      { attemptCapMs: 2_000 },
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(pending).resolves.toMatchObject({ value: "ok", trace: { calls: 3 } });
+    expect(seen).toEqual(["principal", "fallback-a", "fallback-b"]);
+    expect(new Set(seen).size).toBe(seen.length);
+    vi.useRealTimers();
+  });
+
+  it("bounds call count per generate for success, per-minute 429, per-day 429 and cap timeout", async () => {
+    const models = ["principal", "fallback-a", "fallback-b"];
+    const upper = models.length;
+
+    const ok = new GeminiChain(config(models), { now: () => Date.now(), sleep: async () => undefined });
+    await expect(ok.generate(12_000, async () => "ok")).resolves.toMatchObject({
+      trace: { calls: 1 },
+    });
+
+    const perMinute = Object.assign(new Error("Resource exhausted"), {
+      statusCode: 429,
+      data: { error: { details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "30s" }] } },
+    });
+    let minuteCalls = 0;
+    const minute = new GeminiChain(config(models), { now: () => Date.now(), sleep: async () => undefined });
+    await expect(
+      minute.generate(12_000, async () => {
+        minuteCalls += 1;
+        throw perMinute;
+      }),
+    ).rejects.toBeInstanceOf(GeminiQuotaError);
+    expect(minuteCalls).toBeLessThanOrEqual(upper);
+
+    const perDay = Object.assign(new Error("Resource exhausted"), {
+      statusCode: 429,
+      data: {
+        error: {
+          details: [
+            {
+              "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+              metadata: { quota_metric: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" },
+            },
+          ],
+        },
+      },
+    });
+    let dayCalls = 0;
+    const day = new GeminiChain(config(models), { now: () => Date.now(), sleep: async () => undefined });
+    await expect(
+      day.generate(12_000, async () => {
+        dayCalls += 1;
+        throw perDay;
+      }),
+    ).rejects.toBeInstanceOf(GeminiQuotaError);
+    expect(dayCalls).toBeLessThanOrEqual(upper);
+
+    vi.useFakeTimers();
+    let timeoutCalls = 0;
+    const timed = new GeminiChain(config(models), {
+      now: () => Date.now(),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    });
+    const pending = timed.generate(
+      12_000,
+      ({ modelId, abortSignal }: ChainCall) => {
+        timeoutCalls += 1;
+        if (modelId === "fallback-b") return Promise.resolve("ok");
+        return new Promise((_, reject) => {
+          abortSignal.addEventListener("abort", () => {
+            const error = new Error("This operation was aborted");
+            error.name = "AbortError";
+            reject(error);
+          });
+        });
+      },
+      { attemptCapMs: 1_000 },
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(pending).resolves.toMatchObject({ value: "ok", trace: { calls: 3 } });
+    expect(timeoutCalls).toBeLessThanOrEqual(upper);
+    expect(timed.isDemoted("principal")).toBe(false);
+    expect(timed.isDemoted("fallback-a")).toBe(false);
     vi.useRealTimers();
   });
 

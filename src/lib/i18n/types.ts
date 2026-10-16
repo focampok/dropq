@@ -89,6 +89,17 @@ export type Dictionary = {
     deepCuts: string;
     deepCutsOn: string;
     deepCutsOff: string;
+    baselineCompare: string;
+    baselineLoading: string;
+    baselineUnavailable: string;
+    baselineColumnLlm: string;
+    baselineColumnQloo: string;
+    baselineSummary: string;
+    baselineHonest: string;
+    baselineVerified: string;
+    baselineNotVerifiable: string;
+    baselineAlsoInPack: string;
+    baselineAiBadge: string;
     steps: Record<StepId, string>;
     confidenceValue: {
       high: string;

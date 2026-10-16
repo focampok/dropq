@@ -101,6 +101,19 @@ export const es = {
     deepCuts: "Descubrir más",
     deepCutsOn: "Descubrir más está activo",
     deepCutsOff: "Puente por defecto",
+    baselineCompare: "Comparar con una respuesta solo de LLM",
+    baselineLoading: "Consultando al LLM…",
+    baselineUnavailable: "La comparación solo con LLM no está disponible por ahora. Inténtalo en un momento.",
+    baselineColumnLlm: "Solo LLM",
+    baselineColumnQloo: "Con Qloo",
+    baselineSummary:
+      "{verified} de 4 sugerencias solo de LLM se pudieron verificar en Qloo; {inPack} de 4 también aparecen en el pack de Qloo.",
+    baselineHonest:
+      "Los nombres que no se pudieron verificar no son necesariamente incorrectos; simplemente no hay evidencia en el grafo de gusto.",
+    baselineVerified: "Verificado en Qloo",
+    baselineNotVerifiable: "No verificable",
+    baselineAlsoInPack: "También en el pack de Qloo",
+    baselineAiBadge: "IA",
     steps: {
       resolve_seeds: "Resolver anclas",
       insights_hop0: "Insights, salto 0",

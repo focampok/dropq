@@ -91,9 +91,8 @@ model Session {
   timeWindow   String?    @map("time_window")
   lastActiveAt DateTime   @default(now()) @map("last_active_at")
 
-  seeds        Seed[]
-  packs        Pack[]
-  baselineRuns BaselineRun[]
+  seeds Seed[]
+  packs Pack[]
 
   @@index([lastActiveAt])
   @@map("session")
@@ -187,16 +186,21 @@ model PackItem {
   @@map("pack_item")
 }
 
+/// LLM-only vs Qloo comparison, keyed by the language-neutral cards signature + locale.
+/// Independent of PIPELINE_VERSION pack rows; an `llm` baseline is never replaced by a template.
 model BaselineRun {
-  id           String   @id @default(cuid())
-  sessionId    String   @map("session_id")
+  signature    String   @id
+  cardsSig     String   @map("cards_sig")
+  locale       String
   llmItems     Json     @map("llm_items")
   verification Json
-  createdAt    DateTime @default(now()) @map("created_at")
+  source       String
+  builtAt      DateTime @map("built_at")
+  isPreset     Boolean  @default(false) @map("is_preset")
+  qlooCalls    Int      @default(0) @map("qloo_calls")
 
-  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-
-  @@index([sessionId])
+  @@index([builtAt])
+  @@index([cardsSig, locale])
   @@map("baseline_run")
 }
 

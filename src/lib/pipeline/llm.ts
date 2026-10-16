@@ -250,7 +250,7 @@ export function resetGoogleTransportForTests(): void {
 }
 
 /** Every validated call goes through generateObject; nothing free-text is parsed later. */
-async function readStructured<T>(
+export async function readStructured<T>(
   prompt: string,
   schema: z.ZodType<T>,
   timeoutMs: number,

@@ -100,6 +100,19 @@ export const en = {
     deepCuts: "Deep cuts",
     deepCutsOn: "Deep cuts is on",
     deepCutsOff: "Default bridge",
+    baselineCompare: "Compare with an LLM-only answer",
+    baselineLoading: "Asking the LLM…",
+    baselineUnavailable: "The LLM-only comparison is temporarily unavailable. Try again shortly.",
+    baselineColumnLlm: "LLM only",
+    baselineColumnQloo: "With Qloo",
+    baselineSummary:
+      "{verified} of 4 LLM-only suggestions could be verified in Qloo; {inPack} of 4 also appear in the Qloo pack.",
+    baselineHonest:
+      "Names that could not be verified are not necessarily wrong; they just have no evidence in the taste graph.",
+    baselineVerified: "Verified in Qloo",
+    baselineNotVerifiable: "Not verifiable",
+    baselineAlsoInPack: "Also in the Qloo pack",
+    baselineAiBadge: "AI",
     steps: {
       resolve_seeds: "Resolve seeds",
       insights_hop0: "Insights, hop 0",

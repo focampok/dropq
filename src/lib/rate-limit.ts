@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { NextResponse } from "next/server";
 import {
+  BASELINE_IP_LIMIT,
   CHEAP_IP_LIMIT,
   LIVE_GENERATIONS_PER_DAY,
   LLM_CALLS_PER_HOUR,
@@ -197,11 +198,12 @@ function rateLimited(retryAfterSec: number): NextResponse {
   );
 }
 
-export type RateScope = "pack_live" | "pack_cheap" | "other";
+export type RateScope = "pack_live" | "pack_cheap" | "baseline_live" | "other";
 
 /**
  * Enforce in-memory rate limits. `pack_live` is for uncached generations;
- * `pack_cheap` for cache hits and Deep cuts; `other` for seeds/resolve/session.
+ * `pack_cheap` for cache hits and Deep cuts; `baseline_live` for LLM-only
+ * comparison builds (3/min/IP); `other` for seeds/resolve/session.
  */
 export function enforceRateLimit(request: Request, scope: RateScope): NextResponse | null {
   const now = Date.now();
@@ -211,6 +213,12 @@ export function enforceRateLimit(request: Request, scope: RateScope): NextRespon
 
   if (scope === "pack_cheap" || scope === "other") {
     const result = take(`cheap:${ip}`, CHEAP_IP_LIMIT, now);
+    if (!result.ok) return rateLimited(result.retryAfterSec);
+    return null;
+  }
+
+  if (scope === "baseline_live") {
+    const result = take(`baseline:${ip}`, BASELINE_IP_LIMIT, now);
     if (!result.ok) return rateLimited(result.retryAfterSec);
     return null;
   }

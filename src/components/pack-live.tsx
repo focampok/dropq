@@ -249,6 +249,7 @@ export function PackLive({ locale, sessionId }: { locale: Locale; sessionId: str
     <PackView
       locale={locale}
       pack={pack}
+      sessionId={sessionId}
       steps={steps}
       anchors={anchors}
       narratives={narratives}

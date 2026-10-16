@@ -198,7 +198,7 @@ export function warmRowLine(
   row: Pick<
     WarmRow,
     "presetId" | "locale" | "narration" | "modelUsed" | "geminiCalls" | "qlooCalls" | "attempts"
-  > & { status: string; reason: string; extra?: string },
+  > & { status: string; reason: string; extra?: string; baseline?: string },
 ): string {
   const parts = [
     row.presetId,
@@ -213,6 +213,7 @@ export function warmRowLine(
     `gemini=${row.geminiCalls}`,
     `qloo=${row.qlooCalls}`,
   ];
+  if (row.baseline) parts.push(`baseline=${row.baseline}`);
   if (row.extra) parts.push(row.extra);
   return parts.join(" ");
 }

@@ -33,6 +33,13 @@ import {
 } from "../src/lib/pack/cache";
 import { validateCrossLanguageParity, validatePack } from "../src/lib/pack/validate";
 import { relocalizeCachedPack } from "../src/lib/pipeline/run";
+import { buildBaseline } from "../src/lib/baseline/build";
+import {
+  readBaselineCache,
+  writeBaselineIfBetter,
+} from "../src/lib/baseline/cache";
+import { baselineSignature } from "../src/lib/baseline/signature";
+import { packEntityIdsBySlot, validateBaseline } from "../src/lib/baseline/validate";
 import {
   LOCALES,
   WARM_MAX_ROUNDS_DEFAULT,
@@ -202,9 +209,55 @@ function signatureFor(target: WarmTarget): string {
   });
 }
 
+function baselineSigFor(target: WarmTarget): { cardsSig: string; signature: string } {
+  const preset = presetById(target.presetId);
+  const entityIds = preset.seeds.map((seed) => seed.entityId!).filter(Boolean);
+  return baselineSignature({
+    entityIds,
+    city: preset.city,
+    eventKind: preset.eventKind,
+    locale: target.locale,
+    mode: "default",
+  });
+}
+
+/** Build or keep the LLM-only baseline for one preset×locale. Never touches the pack row. */
+async function warmBaseline(
+  target: WarmTarget,
+  pack: PackCachePayload,
+): Promise<{ status: "cached" | "kept" | "failed"; reason: string }> {
+  const { cardsSig, signature } = baselineSigFor(target);
+  const existing = await readBaselineCache(signature);
+  if (existing?.payload.source === "llm") {
+    const check = validateBaseline(existing.payload, packEntityIdsBySlot(pack.packs));
+    if (check.ok) return { status: "kept", reason: "ok" };
+  }
+  const built = await buildBaseline({
+    cardsSig,
+    locale: target.locale,
+    city: pack.city,
+    eventKind: pack.eventKind,
+    anchors: pack.seeds.map((seed) => seed.resolvedName?.trim() || seed.rawText),
+    packIdsBySlot: packEntityIdsBySlot(pack.packs),
+  });
+  if (!built.ok) return { status: "failed", reason: built.reason };
+  const written = await writeBaselineIfBetter({
+    signature,
+    cardsSig,
+    locale: target.locale,
+    payload: built.payload,
+    qlooCalls: built.qlooCalls,
+    isPreset: true,
+  });
+  if (written.invalidRule) return { status: "failed", reason: `invalid:${written.invalidRule}` };
+  if (!written.wrote) return { status: "kept", reason: "ok" };
+  return { status: "cached", reason: "ok" };
+}
+
 async function checkMode(targets: WarmTarget[], validate: boolean): Promise<number> {
   let failed = 0;
   let violations = 0;
+  let baselineOk = 0;
   const byPreset = new Map<string, { en?: PackCachePayload; es?: PackCachePayload }>();
   for (const target of targets) {
     const row = await prisma.packCache.findUnique({ where: { signature: signatureFor(target) } });
@@ -216,6 +269,7 @@ async function checkMode(targets: WarmTarget[], validate: boolean): Promise<numb
         : null,
     });
     let invalidRule: string | undefined;
+    let baselineField = "missing";
     if (validate && row) {
       const payload = row.payload as unknown as PackCachePayload;
       const check = validatePack(payload);
@@ -227,6 +281,35 @@ async function checkMode(targets: WarmTarget[], validate: boolean): Promise<numb
       const bucket = byPreset.get(target.presetId) ?? {};
       bucket[target.locale] = payload;
       byPreset.set(target.presetId, bucket);
+    }
+    const { signature } = baselineSigFor(target);
+    const baselineHit = await readBaselineCache(signature);
+    if (baselineHit) {
+      const packPayload = row ? (row.payload as unknown as PackCachePayload) : null;
+      const baselineCheck = validateBaseline(
+        baselineHit.payload,
+        packPayload ? packEntityIdsBySlot(packPayload.packs) : undefined,
+      );
+      if (baselineCheck.ok && baselineHit.payload.source === "llm") {
+        baselineField = "ok";
+        baselineOk += 1;
+      } else if (!baselineCheck.ok) {
+        baselineField = `fail:${baselineCheck.rule}`;
+        if (validate) {
+          violations += 1;
+          failed += 1;
+        }
+      } else {
+        baselineField = "template";
+        if (validate) {
+          violations += 1;
+          failed += 1;
+        }
+      }
+    } else if (validate) {
+      baselineField = "missing";
+      violations += 1;
+      failed += 1;
     }
     if (!result.ok && !invalidRule) failed += 1;
     const status = invalidRule
@@ -248,6 +331,7 @@ async function checkMode(targets: WarmTarget[], validate: boolean): Promise<numb
         modelUsed: result.modelUsed,
         geminiCalls: 0,
         qlooCalls: 0,
+        baseline: baselineField,
         extra: [
           `present=${result.present}`,
           `age_h=${result.ageHours ?? "n/a"}`,
@@ -283,6 +367,7 @@ async function checkMode(targets: WarmTarget[], validate: boolean): Promise<numb
     }
   }
   console.log(`warm check ${Math.max(0, targets.length - failed)}/${targets.length} ok`);
+  console.log(`warm baselines ${baselineOk}/${targets.length} ok`);
   if (validate) console.log(`warm validate violations=${violations}`);
   return failed > 0 ? 1 : 0;
 }
@@ -434,8 +519,41 @@ async function main(): Promise<void> {
     productionDeps,
   );
 
+  // Baselines for every selected target (including packs that were already llm and
+  // never entered a warm row). A baseline failure never deletes a pack row.
+  const baselineByKey = new Map<string, string>();
+  for (const target of targets) {
+    const packRow = await prisma.packCache.findUnique({ where: { signature: signatureFor(target) } });
+    if (!packRow) {
+      baselineByKey.set(`${target.presetId}:${target.locale}`, "failed:no_pack");
+      continue;
+    }
+    const baseline = await warmBaseline(target, packRow.payload as unknown as PackCachePayload);
+    baselineByKey.set(`${target.presetId}:${target.locale}`, `${baseline.status}:${baseline.reason}`);
+  }
+
   for (const row of result.rows) {
-    console.log(warmRowLine({ ...row, extra: `ms=${row.ms}` }));
+    const baselineExtra = baselineByKey.get(`${row.presetId}:${row.locale}`) ?? "failed:skipped";
+    console.log(warmRowLine({ ...row, baseline: baselineExtra, extra: `ms=${row.ms}` }));
+  }
+  for (const target of targets) {
+    if (result.rows.some((row) => row.presetId === target.presetId && row.locale === target.locale)) continue;
+    const baselineExtra = baselineByKey.get(`${target.presetId}:${target.locale}`) ?? "failed:skipped";
+    console.log(
+      warmRowLine({
+        presetId: target.presetId,
+        locale: target.locale,
+        status: "kept",
+        reason: "ok",
+        attempts: 0,
+        narration: { A: "llm", B: "llm" },
+        modelUsed: { A: null, B: null },
+        geminiCalls: 0,
+        qlooCalls: 0,
+        baseline: baselineExtra,
+        extra: "ms=0",
+      }),
+    );
   }
   const stop = stopLine(result.stop, result.resetMs);
   if (stop) console.log(stop);

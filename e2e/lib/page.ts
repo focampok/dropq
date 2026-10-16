@@ -182,7 +182,12 @@ export async function loadPreset(
       } catch (error) {
         const seen = await readPackWaitSighting(page, sighting);
         const cause = error instanceof Error ? error.message.split("\n")[0]! : String(error);
-        throw new Error(formatPackWaitFailure(where, seen, cause));
+        // No POST /pack at all usually means session create never ran (often a prior
+        // cheap-bucket 429 on the home form), not a hung pack handler.
+        const formHint = seen.status === null && !seen.rateLimitVisible
+          ? "; no pack POST seen — session create may have been rate-limited before navigation"
+          : "";
+        throw new Error(formatPackWaitFailure(where, seen, `${cause}${formHint}`));
       }
       const cache = response.headers()["x-dropq-cache"];
       sighting.status = response.status();
@@ -245,11 +250,37 @@ export function sessionIdOf(page: Page): string {
   return url.searchParams.get("session") ?? "";
 }
 
+/** Human-readable evidence when `/packs/latest` is not a pack payload. */
+export function formatLatestFailure(
+  where: string,
+  sighting: { status: number; retryAfter: string | null; error: string | null; keys: string[] },
+): string {
+  const retry = sighting.retryAfter ?? "absent";
+  const err = sighting.error ?? "absent";
+  const keys = sighting.keys.length > 0 ? sighting.keys.join(",") : "none";
+  return `${where}: packs/latest missing plans field (status=${sighting.status} Retry-After=${retry} error=${err} keys=${keys})`;
+}
+
 /** Read the app's own latest-pack payload through the browser's own cookies. */
-export async function readLatest(page: Page, base: string): Promise<Latest> {
+export async function readLatest(page: Page, base: string, where = "packs/latest"): Promise<Latest> {
   const sessionId = sessionIdOf(page);
+  if (!sessionId) {
+    throw new Error(`${where}: packs/latest missing session id in the page URL`);
+  }
   const response = await page.request.get(`${base}/api/session/${sessionId}/packs/latest`);
-  return (await response.json()) as Latest;
+  const retryAfter = response.headers()["retry-after"] ?? null;
+  const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+  const keys = body && typeof body === "object" ? Object.keys(body) : [];
+  const error = typeof body?.error === "string" ? body.error : null;
+  if (!body || !Array.isArray(body.plans)) {
+    throw new Error(formatLatestFailure(where, { status: response.status(), retryAfter, error, keys }));
+  }
+  if (!Array.isArray(body.anchors)) {
+    throw new Error(
+      `${where}: packs/latest missing anchors field (status=${response.status()} Retry-After=${retryAfter ?? "absent"} keys=${keys.join(",") || "none"})`,
+    );
+  }
+  return body as unknown as Latest;
 }
 
 /** Lazy images only report `naturalWidth` once scrolled into view. */

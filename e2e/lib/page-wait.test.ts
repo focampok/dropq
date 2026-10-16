@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatPackWaitFailure } from "./page";
+import { formatLatestFailure, formatPackWaitFailure } from "./page";
 
 describe("formatPackWaitFailure", () => {
   it("includes status, Retry-After, cache header and rate-limit UI", () => {
@@ -28,5 +28,22 @@ describe("formatPackWaitFailure", () => {
     );
     expect(message).toContain("last pack status=none");
     expect(message).toContain("rate-limit UI=no");
+  });
+});
+
+describe("formatLatestFailure", () => {
+  it("names the missing plans field with status, Retry-After and body keys", () => {
+    const message = formatLatestFailure("fandom-con-nyc/en", {
+      status: 429,
+      retryAfter: "12",
+      error: "rate_limited",
+      keys: ["error"],
+    });
+    expect(message).toContain("fandom-con-nyc/en");
+    expect(message).toContain("missing plans field");
+    expect(message).toContain("status=429");
+    expect(message).toContain("Retry-After=12");
+    expect(message).toContain("error=rate_limited");
+    expect(message).toContain("keys=error");
   });
 });

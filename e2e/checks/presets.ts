@@ -98,8 +98,18 @@ export async function runPresetChecks(ctx: Ctx): Promise<void> {
     B6: new Acc("B6", "Confidence follows the shared-tag rule; weak signal on low", "free"),
   };
 
+  // Prod: six preset×locale loads share the cheap windows with session/latest traffic.
+  // Pace between loads so a dense A/B stretch stays under ~70% of the 60/min caps even
+  // when every check collapses onto one IP (wrong TRUSTED_PROXY_HOPS).
+  const paceMs = ctx.profile === "prod" ? 12_000 : 0;
+  let paced = 0;
   for (const preset of PRESETS) {
     for (const locale of LOCALES) {
+      if (paceMs > 0 && paced > 0) {
+        ctx.log(`prod: pausing ${paceMs / 1000}s between preset loads (${preset}/${locale})`);
+        await new Promise((resolve) => setTimeout(resolve, paceMs));
+      }
+      paced += 1;
       if (ctx.llmSkipped === null) await ctx.qlooBuiltSince(ctx.runStart).then((n) => ctx.budget.setQlooBuilt(n)).catch(() => undefined);
       try {
         await onePreset(ctx, accs, preset, locale);
@@ -149,11 +159,13 @@ async function onePreset(ctx: Ctx, accs: Record<string, Acc>, preset: string, lo
     await scrollThrough(page);
     await waitForImages(page);
     const after = await scrape(page);
-    const latest = await readLatest(page, ctx.base);
+    const latest = await readLatest(page, ctx.base, `${preset}/${locale}`);
     screenshots.push(...(await screenshotBoth(page, `A-B-${preset}-${locale}`)));
 
     if (latest.plans.length !== 2) {
-      for (const acc of Object.values(accs)) acc.fail(`${preset}/${locale}: latest returned ${latest.plans.length} plans`);
+      for (const acc of Object.values(accs)) {
+        acc.fail(`${preset}/${locale}: latest returned ${latest.plans.length} plans (expected 2)`);
+      }
       return;
     }
 

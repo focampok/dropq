@@ -222,6 +222,10 @@ describe("bridge snapshots", () => {
     calls.anchors = [];
     state.session = null;
     vi.stubEnv("QLOO_API_KEY", "test-key");
+    // These tests assert template narration / Qloo refine only — never call a live LLM.
+    vi.stubEnv("LLM_DISABLED", "true");
+    vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "");
+    vi.stubEnv("GEMINI_API_KEY", "");
     vi.stubEnv("NEBIUS_API_KEY", "");
     vi.stubEnv("NEBIUS_BASE_URL", "");
     vi.stubEnv("NEBIUS_MODEL", "");

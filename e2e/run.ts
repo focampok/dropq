@@ -276,11 +276,11 @@ async function main(): Promise<void> {
       }
     };
 
-    // Cheap API checks first, then the browser flows, then the quota-spending ones.
+    // Prod order: pack-loading checks (A/B, H/I, K, F7) first, then S1 brief, then
+    // mocked burst messages (G2/G3), G1 last. `other` and `pack_cheap` are separate
+    // buckets, but pauses still keep a collapsed shared-IP case under ~70% of 60/min.
     // `stop` is set by a fatal abort (a preset that is not in the cache) so the remaining
     // modules are never run: every id they would have reported is failed below instead.
-    // Prod: pack loads (A/B/H/I/K) run before G2/G3/G1. G2/G3 used to fire real pack
-    // traffic that shared the production per-IP cheap bucket with the suite.
     const stop = () => cacheMiss !== null;
     await guard("server", API_CHECKS.server!, () => runServerChecks(ctx));
     if (!stop()) await guard("sessions", API_CHECKS.sessions!, () => runSessionChecks(ctx));
@@ -289,8 +289,6 @@ async function main(): Promise<void> {
       if (!stop()) await guard("limits-messages", BROWSER_CHECKS.messages!, () => runLimitMessageChecks(ctx));
     }
     if (!stop()) await guard("presets", BROWSER_CHECKS.presets!, () => runPresetChecks(ctx));
-    // Prod shares one per-IP cheap bucket (60/min). After six preset loads, pause so H/I
-    // do not inherit a saturated window from A/B.
     if (!stop() && profile === "prod") {
       log("prod: pausing 65s for the per-IP cheap window before language/layout");
       await new Promise((resolve) => setTimeout(resolve, 65_000));
@@ -304,7 +302,6 @@ async function main(): Promise<void> {
       for (const id of [...BROWSER_CHECKS.deepcuts!, ...BROWSER_CHECKS.live!]) skipCheck(recorder, id, "quota-spending", "profile");
     }
     if (!stop()) await guard("a11y", BROWSER_CHECKS.a11y!, () => runA11yChecks(ctx));
-    // F7 after pack loads / a11y: preset baseline hits share the cheap bucket with A/B/H/I/K.
     if (!stop() && profile === "prod") {
       log("prod: pausing 65s for the per-IP cheap window before baseline");
       await new Promise((resolve) => setTimeout(resolve, 65_000));

@@ -204,10 +204,16 @@ function checkA1(
   input: { preset: string; locale: "en" | "es"; visibleMs: number; noteText: string | null; before: SectionDom[]; dictionary: ReturnType<typeof dict> },
 ): void {
   const where = `${input.preset}/${input.locale}`;
-  // A preset that is not in PackCache is built live (8–20 s), which is exactly
-  // what a missing warm looks like from the outside.
-  if (input.visibleMs > 1500) {
-    acc.fail(`${where}: preset not warm: run the remote warm (pack visible in ${input.visibleMs} ms, >1500)`);
+  // A missing PackCache row builds live (8–20 s). Prod already aborts on a non-hit
+  // pack response, so a slow-but-hit paint (cold Next worker, network) is a note,
+  // not a warm failure. Fail the timing gate only when the pack is clearly live.
+  const LIVE_BUILD_MS = 8_000;
+  if (input.visibleMs > LIVE_BUILD_MS) {
+    acc.fail(
+      `${where}: preset not warm: run the remote warm (pack visible in ${input.visibleMs} ms, >${LIVE_BUILD_MS})`,
+    );
+  } else if (input.visibleMs > 1500) {
+    acc.note(`${where}: pack visible in ${input.visibleMs} ms (cache hit, slower than 1.5 s)`);
   }
   const plans = byPlan(input.before, input.locale);
   for (const label of ["A", "B"] as const) {

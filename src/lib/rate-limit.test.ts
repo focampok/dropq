@@ -59,6 +59,23 @@ describe("rate limits", () => {
     expect(enforceRateLimit(request("10.0.0.9"), "pack_cheap")?.status).toBe(429);
   });
 
+  it("keeps pack_cheap and other on separate per-IP buckets", () => {
+    for (let i = 0; i < 60; i++) {
+      expect(enforceRateLimit(request("10.0.0.11"), "pack_cheap")).toBeNull();
+    }
+    expect(enforceRateLimit(request("10.0.0.11"), "pack_cheap")?.status).toBe(429);
+    // Session/latest/brief traffic must still be admitted when pack is saturated.
+    expect(enforceRateLimit(request("10.0.0.11"), "other")).toBeNull();
+
+    resetRateLimits();
+    for (let i = 0; i < 60; i++) {
+      expect(enforceRateLimit(request("10.0.0.12"), "other")).toBeNull();
+    }
+    expect(enforceRateLimit(request("10.0.0.12"), "other")?.status).toBe(429);
+    // Pack cache hits must still be admitted when the other bucket is saturated.
+    expect(enforceRateLimit(request("10.0.0.12"), "pack_cheap")).toBeNull();
+  });
+
   it("limits baseline live builds to 3 per minute per IP", () => {
     for (let i = 0; i < 3; i++) {
       expect(enforceRateLimit(request("10.0.0.7"), "baseline_live")).toBeNull();

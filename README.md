@@ -1,8 +1,14 @@
 # DropQ
 
-DropQ packs a night for an audience and a city the way a promoter would. Name a few public cultural anchors, a destination, and an event kind; DropQ returns two plans of four Qloo-backed cards. Taste comes from Qloo; the LLM only picks Bridge anchors from a closed list and narrates with tokens.
+DropQ turns 3–5 public cultural anchors and a destination city into two nights an organizer can print: Roots, close to the audience, and Bridge, aimed at the city.
 
-**Live demo:** `<DEMO_URL>` (or see the Devpost page). Devpost paste text: [`docs/SUBMISSION.md`](docs/SUBMISSION.md).
+**Live demo:** https://dropq.focampo.com
+
+**Devpost:** DEVPOST_URL
+
+**Try it in 30 seconds:** open the demo, click **Roots GT → LA**, then **Pack the night**. Look at Plan A (Roots) beside Plan B (Bridge): four cards each, every one a Qloo entity. Then open **Why Qloo** on a card.
+
+Devpost paste text: [`docs/SUBMISSION.md`](docs/SUBMISSION.md).
 
 ## Features
 
@@ -10,18 +16,18 @@ DropQ packs a night for an audience and a city the way a promoter would. Name a 
 - **Deep cuts** — popularity filter on Bridge only; idempotent.
 - **Why Qloo** — stored shared tags / city-choice evidence, visually distinct from AI-written narration.
 - **EN/ES** — language toggle; cards stay identical across languages.
-- **LLM-only comparison (F7)** — tool-free LLM suggestions verified against Qloo search; preset baselines warmed into cache.
-- **Printable brief (S1)** — `Open brief` → `/packs/:id/brief` (and `GET /api/packs/:id/brief`). Print / Save as PDF via `window.print()`; presets public, custom packs session-owner only. Pure render of stored data (no Qloo or Gemini calls).
+- **LLM-only comparison** — tool-free LLM suggestions verified against Qloo search; preset baselines warmed into cache.
+- **Printable brief** — `Open brief` → `/packs/:id/brief` (and `GET /api/packs/:id/brief`). Print / Save as PDF via `window.print()`; presets public, custom packs session-owner only. Pure render of stored data (no Qloo or Gemini calls).
 
 ## How Qloo is used
 
 | Call | Role |
 | --- | --- |
-| Search (`/search`) | Resolve seed text to entities (cached); also verifies LLM-only names in F7. |
+| Search (`/search`) | Resolve seed text to entities (cached); also verifies LLM-only names in the comparison. |
 | Entities (`/entities?entity_ids=`) | The seeds' **reference tags** (cached). |
 | Insights (`/v2/insights`) | Fill slots; optional `signal.location.query`, `filter.exclude.entities`; explainability stored when present. |
 
-Bridge anchors are chosen from a **closed list** ranked by shared tags (rule B); the LLM may only re-order that list. Measured limits we work within: about **5 requests/second**, **10 000 requests/month**, no reliable per-item affinity score, and many places without images.
+Bridge anchors are chosen from a **closed list**: the first kept Roots card in watch, listen, and wear. The model may return only ids from that list; otherwise the server keeps rule B. The client starts at most **4 requests/second**. Measured Qloo ceilings we work within: about **5 requests/second** and **10 000 requests/month**, no reliable per-item affinity score, and many places without images.
 
 ### Where shared tags come from
 
@@ -57,7 +63,7 @@ The Bridge's hop-1 request for `listen`, `watch` and `wear` sends `signal.locati
 - **Does:** pick 2–3 Bridge anchors from the closed list; write short narratives with `[[tokens]]` that the server substitutes.
 - **Does not:** invent entities, scores, or places; override Qloo taste; run when the hourly soft cap is hit (template narration + rule B still produce a pack).
 
-### LLM-only vs Qloo (F7)
+### LLM-only vs Qloo
 
 On the pack page, **Compare with an LLM-only answer** asks a tool-free LLM for one name per slot (watch / listen / wear / do), then resolves each name with Qloo `/search` (≤4 searches). The panel shows **LLM only** and **With Qloo** side by side, with Verified / Not verifiable chips and which suggestions also appear in the real pack. Preset baselines are precomputed by `pnpm warm` and served as cache hits; the comparison never changes the pack.
 
@@ -131,8 +137,8 @@ The pack-cache signature includes `PIPELINE_VERSION` (`src/lib/pipeline/config.t
 ## End-to-end tests
 
 `pnpm e2e` drives the built app in a real Chromium and runs the whole checklist — the three
-cached presets, the evidence panel, the LLM-only vs Qloo baseline comparison (F7), the
-printable brief (S1), the live LLM path, Deep cuts, sessions, limits, language, layout and
+cached presets, the evidence panel, the LLM-only vs Qloo baseline comparison, the
+printable brief, the live LLM path, Deep cuts, sessions, limits, language, layout and
 the server surface — printing `PASS`, `FAIL` or `SKIP: <reason>` per check and writing
 `docs/e2e/report.html`,
 `docs/e2e/summary.json`, `docs/e2e/run.log` and the screenshots (all under the git-ignored
@@ -330,7 +336,7 @@ E2E_BASE_URL=https://<host> pnpm e2e -- --profile prod
 
 ## Judge quick path
 
-1. Open `<DEMO_URL>` (or the Devpost demo link) and click a preset — pack should load from cache.
+1. Open https://dropq.focampo.com (or the Devpost demo link) and click **Roots GT → LA** — the pack should load from cache.
 2. Toggle **EN/ES**, turn **Deep cuts** on/off, open **Why Qloo**, then **Compare with an LLM-only answer**.
 3. Click **Open brief**, switch language on the brief page, then **Print / Save as PDF**.
 

@@ -32,3 +32,5 @@ coverage/
 # generated evidence and pass reports (kept locally, not versioned)
 /docs/*
 !/docs/SUBMISSION.md
+!/docs/gallery/
+!/docs/gallery/**

@@ -38,6 +38,7 @@ import { runLiveChecks } from "./checks/live";
 import { runA11yChecks } from "./checks/a11y";
 import { runBaselineChecks } from "./checks/baseline";
 import { runBriefChecks } from "./checks/brief";
+import { runMcpChecks } from "./checks/mcp";
 
 const BROWSER_CHECKS: Record<string, string[]> = {
   presets: ["A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3", "B4", "B5", "B6"],
@@ -55,6 +56,7 @@ const BROWSER_CHECKS: Record<string, string[]> = {
 const API_CHECKS: Record<string, string[]> = {
   server: ["J1", "J2", "J3"],
   sessions: ["F1", "F2"],
+  mcp: ["M1", "M2", "M3", "M4"],
   "limits-api": ["G1", "G4"],
 };
 
@@ -284,6 +286,7 @@ async function main(): Promise<void> {
     const stop = () => cacheMiss !== null;
     await guard("server", API_CHECKS.server!, () => runServerChecks(ctx));
     if (!stop()) await guard("sessions", API_CHECKS.sessions!, () => runSessionChecks(ctx));
+    if (!stop()) await guard("mcp", API_CHECKS.mcp!, () => runMcpChecks(ctx));
     if (profile === "local") {
       if (!stop()) await guard("limits-api", API_CHECKS["limits-api"]!, () => runLimitApiChecks(ctx));
       if (!stop()) await guard("limits-messages", BROWSER_CHECKS.messages!, () => runLimitMessageChecks(ctx));

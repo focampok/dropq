@@ -70,9 +70,11 @@ On the pack page, **Compare with an LLM-only answer** asks a tool-free LLM for o
 ## Architecture
 
 ```
-browser ──► Next.js (App Router)
+browser ─┐
+agent  ──┴──► Next.js (App Router)
               │
               ├── /api/session…/pack     live / cached pack build
+              ├── /api/mcp               Streamable HTTP MCP tools
               ├── /api/packs/:id/brief   JSON brief (stored rows only)
               ├── /packs/:id/brief       printable brief page
               │
@@ -84,6 +86,50 @@ browser ──► Next.js (App Router)
 ```
 
 In-memory rate limits and soft caps assume a **single app instance**.
+
+## Use DropQ from your agent
+
+DropQ exposes two MCP tools over **Streamable HTTP** at `https://dropq.focampo.com/api/mcp`:
+
+| Tool | What it does |
+| --- | --- |
+| `pack_night(anchors[3..5], city, event_kind, lang?, deep_cuts?)` | Creates a session and runs the same pipeline as the UI. Returns both plans, every Qloo `entityId`, the stored evidence, and the printable brief URL. |
+| `list_presets()` | Lists the warmed presets already present in the pack cache, with their cached EN/ES plans. Spends nothing. |
+
+`lang` defaults to `en` and `deep_cuts` to `false`. The tools call the same routes, cache and guards as the browser. A preset anchor set served from the warm cache spends no Qloo or Gemini quota; a custom build uses the same per-IP rate limits, monthly reserve and daily cap. Deep cuts may build its Bridge live the first time, exactly as the UI does. The brief link is public for preset packs; a custom pack's brief still belongs to the session that built it.
+
+**Claude Desktop** (`claude_desktop_config.json`), through the `mcp-remote` bridge for builds that only speak stdio:
+
+```json
+{
+  "mcpServers": {
+    "dropq": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://dropq.focampo.com/api/mcp"]
+    }
+  }
+}
+```
+
+**Cursor** (`.cursor/mcp.json`), connecting to the Streamable HTTP endpoint directly:
+
+```json
+{
+  "mcpServers": {
+    "dropq": {
+      "url": "https://dropq.focampo.com/api/mcp"
+    }
+  }
+}
+```
+
+If your Claude Desktop build accepts a remote Streamable HTTP URL directly, use the same URL there instead of the bridge.
+
+Example prompt:
+
+> Use DropQ to plan a community night in Los Angeles for an audience into Ricardo Arjona, Pollo Campero, and Gaby Moreno. Call `list_presets` first. If **Roots GT → LA** is cached, call `pack_night` with those three anchors, `city: "Los Angeles"`, `event_kind: "comunidad"`. Show me both plans with their entity ids and give me the brief link.
+
+The e2e suite calls the endpoint with the official SDK client (`M1`–`M4`), and the `pack_night` case must be a preset cache hit — a miss fails the prod run before any live build can complete.
 
 ## Quick start
 
@@ -133,13 +179,14 @@ The pack-cache signature includes `PIPELINE_VERSION` (`src/lib/pipeline/config.t
 | `DROPQ_LLM_BUDGET` | Per-process model-call cap (default uncapped) |
 | `LOG_IP_PROBE` | `1` logs a five-request client-IP diagnostic (default off) |
 | `NEXT_PUBLIC_REPOSITORY_URL` | Optional public repo URL for the MIT footer link (no hard-coded host in code) |
+| `DROPQ_PUBLIC_URL` | Public origin used in MCP brief links (default `https://dropq.focampo.com`) |
 
 ## End-to-end tests
 
 `pnpm e2e` drives the built app in a real Chromium and runs the whole checklist — the three
 cached presets, the evidence panel, the LLM-only vs Qloo baseline comparison, the
-printable brief, the live LLM path, Deep cuts, sessions, limits, language, layout and
-the server surface — printing `PASS`, `FAIL` or `SKIP: <reason>` per check and writing
+printable brief, the live LLM path, Deep cuts, sessions, limits, language, layout, the
+server surface and the MCP endpoint — printing `PASS`, `FAIL` or `SKIP: <reason>` per check and writing
 `docs/e2e/report.html`,
 `docs/e2e/summary.json`, `docs/e2e/run.log` and the screenshots (all under the git-ignored
 `docs/`). The process exits non-zero when any check fails; a SKIP is never a pass.
@@ -158,6 +205,8 @@ the server surface — printing `PASS`, `FAIL` or `SKIP: <reason>` per check and
   `Strict-Transport-Security` on `/` and `/api/health`; over `http` HSTS is only noted,
   because browsers ignore it there and the header is gated on `NODE_ENV=production`.
 - `pnpm e2e:report` regenerates `report.html` and `summary.json` from the last run.
+
+**The MCP checks use the official SDK client**, not a hand-written JSON-RPC call: `M1` initializes, `M2` reads the tool schemas, `M3` reads `list_presets`, and `M4` calls `pack_night` with the Roots GT → LA anchors. In the prod profile `M4` must report `cache.pack: "hit"`; a miss aborts the run with the same `PresetCacheMissError` a cold preset click raises.
 
 **In the prod profile every preset load must be a cache hit.** The app answers a served
 preset with `X-DropQ-Cache: hit`; if any preset load comes back without it, the suite prints
@@ -246,6 +295,7 @@ non-zero on anything required-and-absent or invalid.
 | `NEBIUS_API_KEY` / `NEBIUS_BASE_URL` / `NEBIUS_MODEL` | see note | — | Required as a set when the Nebius provider is in use. |
 | `DROPQ_LLM_BUDGET` | no | uncapped | Per-process model-call cap. |
 | `LOG_IP_PROBE` | no | off | Temporary client-IP diagnostic; see below. |
+| `DROPQ_PUBLIC_URL` | no | `https://dropq.focampo.com` | Public origin used in MCP brief links. |
 
 Without any LLM credentials the app degrades on purpose: anchors use rule B and narration
 uses the template, with `coverage.llm.off` naming the reason. That is a valid deployment.

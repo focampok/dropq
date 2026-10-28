@@ -27,11 +27,13 @@
     "verify:local": "tsx scripts/verify-local.ts",
     "probe:llm": "tsx scripts/probe-llm.ts",
     "e2e": "tsx e2e/run.ts",
-    "e2e:report": "tsx e2e/run.ts --report"
+    "e2e:report": "tsx e2e/run.ts --report",
+    "mcp:check": "tsx scripts/check-mcp.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "2.0.102",
     "@ai-sdk/openai": "^2.0.52",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@prisma/client": "^6.16.3",
     "@radix-ui/react-label": "^2.1.7",
     "@radix-ui/react-slot": "^1.2.3",

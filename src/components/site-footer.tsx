@@ -18,9 +18,7 @@ export function SiteFooter({ locale }: { locale: Locale }) {
         >
           {dictionary.footer.source}
         </a>
-      ) : (
-        <p>{dictionary.brief.license}</p>
-      )}
+      ) : null}
     </footer>
   );
 }

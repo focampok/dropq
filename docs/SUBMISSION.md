@@ -13,9 +13,13 @@ An organizer declares **3–5 public cultural anchors**, a **destination city**,
 
 Slots are **watch**, **listen**, **wear**, and **do**. Every stored card carries a Qloo `entityId`.
 
-The server runs a fixed pipeline. The model does not call Qloo and does not choose which endpoint to hit. It makes two structured choices inside that pipeline: which two or three Roots cards become the Bridge anchors, and the sentences that connect the cards. Qloo remains the source of every recommendation. Anchors are public cultural names. DropQ does not ask for or infer ethnicity, nationality, or immigration status. Results are group-level affinities.
+DropQ is a bounded agent. The server runs a fixed pipeline and the model makes two structured decisions inside it: which two or three Roots cards become the Bridge anchors, and the sentences that connect the cards. The server validates each reply, gives a rejected narration one repair attempt, and falls back to a deterministic rule when the model is unavailable. Qloo remains the source of every recommendation. Anchors are public cultural names. DropQ does not ask for or infer ethnicity, nationality, or immigration status. Results are group-level affinities.
 
 The UI is bilingual (EN/ES). Warmed English and Spanish rows share the same entity ids; only the narration changes. Deep cuts sets `filter.popularity.max` to `0.9` on Bridge `listen`, `watch`, and `wear` only. Roots and the `do` slot stay as they were. “Why Qloo” shows the stored evidence: shared tags, the hop, the entity id, and, for a place, that the city chose it. An optional **LLM-only comparison** sits beside the pack. A **printable brief** at `/packs/:id/brief` renders the stored pack. Opening it spends nothing.
+
+## Use it from an agent
+
+DropQ exposes the same pipeline as MCP tools at `https://dropq.focampo.com/api/mcp` (Streamable HTTP). `pack_night` takes 3–5 public anchors, a city, an event kind, an optional language and an optional Deep cuts flag, and returns both plans with every Qloo entity id, the stored evidence and the printable brief link. `list_presets` returns the warmed presets that are present in the pack cache. Both tools use the same cache, per-IP rate limits, monthly reserve and daily cap as the web app. A preset served from cache spends no Qloo or Gemini quota; a custom build is refused under the same conditions as a custom build in the UI. Deep cuts may build its Bridge live the first time, exactly as the UI does.
 
 ## Potential impact
 
@@ -31,7 +35,7 @@ A volunteer programming a Guatemalan community night in Los Angeles opens the pr
 
 ## What the model decides
 
-`runAgent` is an unimplemented stub. A live build always walks the same steps. The model is asked only at steps 5 and 8, and only for JSON.
+The pack is a bounded agent: two model decisions, both with structured output, inside a fixed eight-step run. The server owns the pipeline, validates every reply, gives a rejected narration one repair call, and keeps a deterministic path that always produces a complete pack. There is no open-ended tool loop and no free-form step. The model is asked only at steps 5 and 8.
 
 1. **Resolve anchors.** `GET /search` for each seed (`query`, and `type` when the seed has one). Results are cached.
 2. **Roots.** `GET /v2/insights` fills watch, listen, wear, and do from the resolved anchors. Watch asks for `urn:entity:tv_show`. If fewer than three named shows come back, the loader tries `urn:entity:movie`. A warmed preset still has to be a TV show or it is not stored.
@@ -41,6 +45,8 @@ A volunteer programming a Guatemalan community night in Los Angeles opens the pr
 6. **Bridge insights.** `GET /v2/insights` from those ids. On listen, watch, and wear the request sends `signal.location.query` for the destination city and `filter.exclude.entities` with the Roots ids, so Plan B does not repeat Plan A. Do does not send `filter.exclude.entities`. Both plans ask for a place in the city (`filter.location` as a WKT point, radius 20 km, one retry at 40 km) and drop Roots place ids after the response. The place is labeled as chosen for the city. Deep cuts adds `filter.popularity.max=0.9` on Bridge listen, watch, and wear only.
 7. **Assemble and paint.** The server stores both plans with a template line (`Tonight: {names}.` / `Esta noche: {names}.`) and returns them. The page paints that row. It does not wait on the narration call for the cards.
 8. **Narration.** One structured call (12 second deadline) asks for a headline and a line per plan. Where a name would go, the model must emit a token: `[[watch]]`, `[[listen]]`, `[[wear]]`, `[[do]]`, `[[city]]`, `[[anchor1]]` through `[[anchor3]]`. The server rejects an empty line, a line over 280 characters or two sentences, a headline over 60 characters (the prompt asks the model to stay within 40), a URL, an unknown or repeated token, a line that uses no token, a Spanish article glued to a token, or the wrong language. It allows one repair call that names the rejection. If that fails, the template stays and the failure is stored. Only a line that passes is written, and only then does the server substitute the real card names. The model never types the entity name that the pack displays.
+
+**Guardrails.** The model never calls Qloo and never chooses an endpoint; the server owns every request and parameter. The only entities it may pick are the ids on the closed list from step 4, and the server re-checks that no two share a slot. It never types a name that appears in the pack: it emits tokens, and the server replaces them with stored Qloo names. A reply that fails schema, id, language, length, URL or token checks is rejected. Narration gets one repair; anchors do not. When the model is off, over quota, slow or rejected, rule B and the template still produce both plans, and the failure is stored on the pack.
 
 If no anchor resolves, the later steps are skipped and the stored narrative is the empty template. A live build also stops at a 40 second budget and shows what it already has.
 
@@ -102,10 +108,10 @@ An audience bridge through `GET /v2/analysis/compare` (the client can call it; t
 
 ## Built with
 
-Next.js, React, TypeScript, Prisma, PostgreSQL, Tailwind CSS, Playwright, Qloo Taste API, Google Gemini (optional Nebius), Railway.
+Next.js, React, TypeScript, Prisma, PostgreSQL, Tailwind CSS, Playwright, Model Context Protocol (MCP), Qloo Taste API, Google Gemini (optional Nebius), Railway.
 
 ## Try it
 
 - Demo: https://dropq.focampo.com
-- Repository: the public DropQ GitHub repo (MIT).
+- Repository: https://github.com/focampok/dropq (MIT).
 - Steps: open **Roots GT → LA** → Pack the night → toggle language → toggle Deep cuts → read Why Qloo → Compare with an LLM-only answer → Open brief → Print / Save as PDF.

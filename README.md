@@ -4,7 +4,7 @@ DropQ turns 3–5 public cultural anchors and a destination city into two nights
 
 **Live demo:** https://dropq.focampo.com
 
-**Devpost:** DEVPOST_URL
+**Devpost:** https://devpost.com/software/dropq
 
 **Try it in 30 seconds:** open the demo, click **Roots GT → LA**, then **Pack the night**. Look at Plan A (Roots) beside Plan B (Bridge): four cards each, every one a Qloo entity. Then open **Why Qloo** on a card.
 
